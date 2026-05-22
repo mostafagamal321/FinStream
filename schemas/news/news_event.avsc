@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "NewsEvent",
+  "namespace": "finstream.news",
+  "fields": [
+    {"name": "ticker", "type": ["null", "string"], "default": null},
+    {"name": "company", "type": ["null", "string"], "default": null},
+    {"name": "title", "type": "string"},
+    {"name": "url", "type": ["null", "string"], "default": null},
+    {"name": "published_at", "type": "string"},
+    {"name": "sentiment", "type": ["null", "string"], "default": null},
+    {"name": "score", "type": ["null", "double"], "default": null}
+  ]
+}
