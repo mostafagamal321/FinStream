@@ -1,5 +1,15 @@
 # FinStream — Real-Time Financial Intelligence Platform
 
+![Project Status](https://img.shields.io/badge/status-in%20progress-yellow)
+![Build](https://img.shields.io/badge/build-in%20development-orange)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Docker](https://img.shields.io/badge/docker-ready-blue)
+![Kafka](https://img.shields.io/badge/kafka-streaming-black)
+![Flink](https://img.shields.io/badge/flink-real--time-orange)
+![ClickHouse](https://img.shields.io/badge/clickhouse-analytics-yellow)
+![Machine Learning](https://img.shields.io/badge/ML-fraud%20detection-purple)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 FinStream is a real-time financial intelligence platform that simulates how a modern bank, fintech, or investment-risk team turns fast-moving financial data into business decisions. The platform processes transaction data, stock market data, and company news data to support three use cases: real-time fraud detection, dynamic risk scoring, and market intelligence.
 
 ## Business Case
@@ -56,13 +66,7 @@ finstream/
 
 ## First Implementation Phases
 
-1. Build transaction, stock, and news producers.
-2. Publish events into Kafka topics with schemas.
-3. Create Flink jobs for transaction scoring and market/news signals.
-4. Write raw events to Bronze and real-time outputs to ClickHouse.
-5. Build Silver/Gold transformations and feature refresh jobs.
-6. Add ML training, model registry, dashboards, monitoring, and alerting.
 
 ## Status
 
-Initial repository scaffold.
+Initial repository 
