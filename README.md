@@ -8,7 +8,6 @@
 ![Flink](https://img.shields.io/badge/flink-real--time-orange)
 ![ClickHouse](https://img.shields.io/badge/clickhouse-analytics-yellow)
 ![Machine Learning](https://img.shields.io/badge/ML-fraud%20detection-purple)
-![License](https://img.shields.io/badge/license-MIT-green)
 
 FinStream is a real-time financial intelligence platform that simulates how a modern bank, fintech, or investment-risk team turns fast-moving financial data into business decisions. The platform processes transaction data, stock market data, and company news data to support three use cases: real-time fraud detection, dynamic risk scoring, and market intelligence.
 
