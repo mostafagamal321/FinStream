@@ -1,0 +1,16 @@
+{
+  "type": "record",
+  "name": "StockTickEvent",
+  "namespace": "finstream.market",
+  "fields": [
+    {"name": "ticker", "type": "string"},
+    {"name": "volume", "type": "double"},
+    {"name": "vwap", "type": ["null", "double"], "default": null},
+    {"name": "open", "type": "double"},
+    {"name": "close", "type": "double"},
+    {"name": "high", "type": "double"},
+    {"name": "low", "type": "double"},
+    {"name": "event_time_ms", "type": "long"},
+    {"name": "trade_count", "type": ["null", "long"], "default": null}
+  ]
+}

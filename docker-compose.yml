@@ -1,0 +1,8 @@
+services:
+  # Phase 1 placeholder compose file.
+  # Add Kafka, Schema Registry, Redis, ClickHouse, Flink, Airflow, MLflow, Superset, Prometheus, and Grafana incrementally.
+  redis:
+    image: redis:7-alpine
+    container_name: finstream-redis
+    ports:
+      - "6379:6379"

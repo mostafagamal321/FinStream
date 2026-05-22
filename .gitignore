@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Data / artifacts
+/data/raw/*
+!/data/raw/.gitkeep
+/data/sample/*
+!/data/sample/.gitkeep
+*.parquet
+*.csv
+*.jsonl
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker / local
+s3_local_cache/
+clickhouse_data/
+postgres_data/
+redis_data/

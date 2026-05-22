@@ -1,0 +1,24 @@
+{
+  "type": "record",
+  "name": "TransactionEvent",
+  "namespace": "finstream.transactions",
+  "fields": [
+    {"name": "TransactionID", "type": "string"},
+    {"name": "isFraud", "type": ["null", "int"], "default": null},
+    {"name": "TransactionDT", "type": "long"},
+    {"name": "TransactionAmt", "type": "double"},
+    {"name": "ProductCD", "type": ["null", "string"], "default": null},
+    {"name": "card1", "type": ["null", "int"], "default": null},
+    {"name": "card2", "type": ["null", "int"], "default": null},
+    {"name": "card3", "type": ["null", "int"], "default": null},
+    {"name": "card4", "type": ["null", "string"], "default": null},
+    {"name": "card5", "type": ["null", "int"], "default": null},
+    {"name": "card6", "type": ["null", "string"], "default": null},
+    {"name": "addr1", "type": ["null", "int"], "default": null},
+    {"name": "addr2", "type": ["null", "int"], "default": null},
+    {"name": "dist1", "type": ["null", "double"], "default": null},
+    {"name": "dist2", "type": ["null", "double"], "default": null},
+    {"name": "P_emaildomain", "type": ["null", "string"], "default": null},
+    {"name": "R_emaildomain", "type": ["null", "string"], "default": null}
+  ]
+}
