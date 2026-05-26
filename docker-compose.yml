@@ -1,8 +1,459 @@
+name: finstream
+
+x-aws-env: &aws-env
+ AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+ AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+ AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+ AWS_REGION: ${AWS_REGION}
+ FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+ FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET}
+ MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET}
+
+x-airflow-common: &airflow-common
+ image: apache/airflow:2.9.3-python3.11
+ env_file: .env
+ environment:
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+  AWS_REGION: ${AWS_REGION}
+  FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+  FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET}
+  MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET}
+ volumes:
+  - ./airflow/dags:/opt/airflow/dags
+  - ./airflow/logs:/opt/airflow/logs
+  - ./airflow/plugins:/opt/airflow/plugins
+  - ./spark/jobs:/opt/airflow/spark/jobs
+  - ./dbt:/opt/airflow/dbt
+ user: "${AIRFLOW_UID:-50000}:0"
+ depends_on:
+  postgres:
+   condition: service_healthy
+ networks:
+  - finstream
+
 services:
-  # Phase 1 placeholder compose file.
-  # Add Kafka, Schema Registry, Redis, ClickHouse, Flink, Airflow, MLflow, Superset, Prometheus, and Grafana incrementally.
-  redis:
-    image: redis:7-alpine
-    container_name: finstream-redis
-    ports:
-      - "6379:6379"
+ zookeeper:
+  image: confluentinc/cp-zookeeper:7.6.1
+  container_name: finstream-zookeeper
+  environment:
+   ZOOKEEPER_CLIENT_PORT: 2181
+   ZOOKEEPER_TICK_TIME: 2000
+  ports:
+   - "2181:2181"
+  healthcheck:
+   test: ["CMD-SHELL", "cub zk-ready localhost:2181 30"]
+   interval: 10s
+   timeout: 10s
+   retries: 15
+  networks:
+   - finstream
+
+ kafka:
+  image: confluentinc/cp-kafka:7.6.1
+  container_name: finstream-kafka
+  depends_on:
+   zookeeper:
+    condition: service_healthy
+  ports:
+   - "9092:9092"
+   - "29092:29092"
+  environment:
+   KAFKA_BROKER_ID: 1
+   KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+   KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+   KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+   KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+   KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+   KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+   KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+   KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+   KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  healthcheck:
+   test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+   interval: 10s
+   timeout: 10s
+   retries: 15
+  networks:
+   - finstream
+
+ schema-registry:
+  image: confluentinc/cp-schema-registry:7.6.1
+  container_name: finstream-schema-registry
+  depends_on:
+   kafka:
+    condition: service_healthy
+  ports:
+   - "8081:8081"
+  environment:
+   SCHEMA_REGISTRY_HOST_NAME: schema-registry
+   SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+   SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+  healthcheck:
+   test: ["CMD-SHELL", "curl -fsS http://localhost:8081/subjects >/dev/null"]
+   interval: 10s
+   timeout: 5s
+   retries: 12
+  networks:
+   - finstream
+
+ kafka-init:
+  image: confluentinc/cp-kafka:7.6.1
+  container_name: finstream-kafka-init
+  depends_on:
+   kafka:
+    condition: service_healthy
+  command: >
+   bash -c '
+     for topic in transactions market_ticks news_events fx_rates fraud_alerts dlq raw_audit_events; do
+       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic $$topic --partitions 6 --replication-factor 1;
+     done;
+     kafka-topics --bootstrap-server kafka:9092 --list;
+   '
+  networks:
+   - finstream
+
+ redis:
+  image: redis:7.2-alpine
+  container_name: finstream-redis
+  command: ["redis-server", "--appendonly", "yes"]
+  ports:
+   - "6379:6379"
+  volumes:
+   - redis-data:/data
+  healthcheck:
+   test: ["CMD", "redis-cli", "ping"]
+   interval: 10s
+   timeout: 5s
+   retries: 10
+  networks:
+   - finstream
+
+ flink-jobmanager:
+  image: flink:1.19.1-scala_2.12-java17
+  container_name: finstream-flink-jobmanager
+  command: jobmanager
+  ports:
+   - "8082:8081"
+   - "9249:9249"
+  environment:
+   <<: *aws-env
+   REDIS_HOST: redis
+   REDIS_PORT: 6379
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   SCHEMA_REGISTRY_URL: http://schema-registry:8081
+   FLINK_PROPERTIES: |
+    jobmanager.rpc.address: flink-jobmanager
+    parallelism.default: 2
+    state.backend: rocksdb
+    state.checkpoints.dir: s3://${FINSTREAM_BRONZE_BUCKET}/flink/checkpoints
+    execution.checkpointing.interval: 10000
+    metrics.reporters: prom
+    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
+    metrics.reporter.prom.port: 9249
+    s3.access-key: ${AWS_ACCESS_KEY_ID}
+    s3.secret-key: ${AWS_SECRET_ACCESS_KEY}
+    s3.region: ${AWS_REGION}
+  volumes:
+   - ./flink/jobs:/opt/flink/usrlib
+  depends_on:
+   kafka:
+    condition: service_healthy
+   schema-registry:
+    condition: service_healthy
+   redis:
+    condition: service_healthy
+  networks:
+   - finstream
+
+ flink-taskmanager:
+  image: flink:1.19.1-scala_2.12-java17
+  container_name: finstream-flink-taskmanager
+  command: taskmanager
+  ports:
+   - "9250:9249"
+  environment:
+   <<: *aws-env
+   REDIS_HOST: redis
+   REDIS_PORT: 6379
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   SCHEMA_REGISTRY_URL: http://schema-registry:8081
+   FLINK_PROPERTIES: |
+    jobmanager.rpc.address: flink-jobmanager
+    taskmanager.numberOfTaskSlots: 4
+    parallelism.default: 2
+    state.backend: rocksdb
+    state.checkpoints.dir: s3://${FINSTREAM_BRONZE_BUCKET}/flink/checkpoints
+    metrics.reporters: prom
+    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
+    metrics.reporter.prom.port: 9249
+    s3.access-key: ${AWS_ACCESS_KEY_ID}
+    s3.secret-key: ${AWS_SECRET_ACCESS_KEY}
+    s3.region: ${AWS_REGION}
+  volumes:
+   - ./flink/jobs:/opt/flink/usrlib
+  depends_on:
+   flink-jobmanager:
+    condition: service_started
+  networks:
+   - finstream
+
+ s3-init:
+  image: amazon/aws-cli:2.15.57
+  container_name: finstream-s3-init
+  profiles:
+   - setup
+  environment:
+   <<: *aws-env
+  entrypoint: >
+   /bin/sh -c "
+   if [ \"$$AWS_REGION\" = \"us-east-1\" ]; then
+     aws s3api create-bucket --bucket $$FINSTREAM_BRONZE_BUCKET --region $$AWS_REGION || true;
+     aws s3api create-bucket --bucket $$FINSTREAM_SILVER_BUCKET --region $$AWS_REGION || true;
+     aws s3api create-bucket --bucket $$MLFLOW_ARTIFACT_BUCKET --region $$AWS_REGION || true;
+   else
+     aws s3api create-bucket --bucket $$FINSTREAM_BRONZE_BUCKET --region $$AWS_REGION --create-bucket-configuration LocationConstraint=$$AWS_REGION || true;
+     aws s3api create-bucket --bucket $$FINSTREAM_SILVER_BUCKET --region $$AWS_REGION --create-bucket-configuration LocationConstraint=$$AWS_REGION || true;
+     aws s3api create-bucket --bucket $$MLFLOW_ARTIFACT_BUCKET --region $$AWS_REGION --create-bucket-configuration LocationConstraint=$$AWS_REGION || true;
+   fi;
+   aws s3 ls;
+   "
+  networks:
+   - finstream
+
+ spark-master:
+  image: apache/spark:3.5.1-java17-python3
+  container_name: finstream-spark-master
+  command: >
+   /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+   --host spark-master
+   --port 7077
+   --webui-port 8080
+  environment:
+   <<: *aws-env
+  ports:
+   - "7077:7077"
+   - "8083:8080"
+  volumes:
+   - ./spark/jobs:/opt/spark/jobs
+   - ./dbt:/opt/spark/dbt
+  networks:
+   - finstream
+
+ spark-worker:
+  image: apache/spark:3.5.1-java17-python3
+  container_name: finstream-spark-worker
+  command: >
+   /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+   spark://spark-master:7077
+   --webui-port 8081
+   --cores 2
+   --memory 2G
+  environment:
+   <<: *aws-env
+  ports:
+   - "8084:8081"
+  volumes:
+   - ./spark/jobs:/opt/spark/jobs
+   - ./dbt:/opt/spark/dbt
+  depends_on:
+   spark-master:
+    condition: service_started
+  networks:
+   - finstream
+
+ clickhouse:
+  image: clickhouse/clickhouse-server:24.7
+  container_name: finstream-clickhouse
+  env_file: .env
+  environment:
+   CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+   CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+   CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+   CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+  ports:
+   - "8123:8123"
+   - "9009:9000"
+  volumes:
+   - clickhouse-data:/var/lib/clickhouse
+   - ./clickhouse/init:/docker-entrypoint-initdb.d
+  healthcheck:
+   test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
+   interval: 10s
+   timeout: 5s
+   retries: 12
+  networks:
+   - finstream
+
+ superset:
+  image: apache/superset:4.1.2-dev
+  container_name: finstream-superset
+  env_file: .env
+  environment:
+   SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+  ports:
+   - "8090:8088"
+  volumes:
+   - superset-home:/app/superset_home
+  depends_on:
+   clickhouse:
+    condition: service_healthy
+  command: >
+   /bin/sh -c "
+   superset db upgrade &&
+   superset fab create-admin --username $$SUPERSET_ADMIN_USER --firstname FinStream --lastname Admin --email $$SUPERSET_ADMIN_EMAIL --password $$SUPERSET_ADMIN_PASSWORD || true &&
+   superset init &&
+   superset run -h 0.0.0.0 -p 8088 --with-threads
+   "
+  networks:
+   - finstream
+
+ prometheus:
+  image: prom/prometheus:v2.53.1
+  container_name: finstream-prometheus
+  ports:
+   - "9090:9090"
+  volumes:
+   - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+   - prometheus-data:/prometheus
+  networks:
+   - finstream
+
+ grafana:
+  image: grafana/grafana:11.1.0
+  container_name: finstream-grafana
+  ports:
+   - "3000:3000"
+  environment:
+   GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+   GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+   GF_USERS_ALLOW_SIGN_UP: "false"
+  volumes:
+   - grafana-data:/var/lib/grafana
+  depends_on:
+   prometheus:
+    condition: service_started
+  networks:
+   - finstream
+
+ postgres:
+  image: postgres:15-alpine
+  container_name: finstream-postgres
+  env_file: .env
+  ports:
+   - "5432:5432"
+  volumes:
+   - postgres-data:/var/lib/postgresql/data
+  healthcheck:
+   test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+   interval: 10s
+   timeout: 5s
+   retries: 10
+  networks:
+   - finstream
+
+ airflow-init:
+  <<: *airflow-common
+  container_name: finstream-airflow-init
+  entrypoint: /bin/bash
+  command: >
+   -c "
+   airflow db migrate &&
+   airflow users create --username $$AIRFLOW_ADMIN_USER --password $$AIRFLOW_ADMIN_PASSWORD --firstname FinStream --lastname Admin --role Admin --email $$AIRFLOW_ADMIN_EMAIL || true
+   "
+  depends_on:
+   postgres:
+    condition: service_healthy
+
+ airflow-webserver:
+  <<: *airflow-common
+  container_name: finstream-airflow-webserver
+  command: webserver
+  ports:
+   - "8080:8080"
+  depends_on:
+   airflow-init:
+    condition: service_completed_successfully
+  healthcheck:
+   test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
+   interval: 30s
+   timeout: 10s
+   retries: 5
+
+ airflow-scheduler:
+  <<: *airflow-common
+  container_name: finstream-airflow-scheduler
+  command: scheduler
+  depends_on:
+   airflow-init:
+    condition: service_completed_successfully
+
+ mlflow:
+  image: ghcr.io/mlflow/mlflow:v2.14.3
+  container_name: finstream-mlflow
+  env_file: .env
+  environment:
+   <<: *aws-env
+  ports:
+   - "5000:5000"
+  volumes:
+   - mlflow-data:/mlflow
+  command: >
+   /bin/sh -c "
+   pip install --no-cache-dir boto3 >/dev/null 2>&1 &&
+   mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlflow/mlflow.db --default-artifact-root s3://$$MLFLOW_ARTIFACT_BUCKET/artifacts
+   "
+  networks:
+   - finstream
+
+ alert-consumer:
+  image: python:3.11-slim
+  container_name: finstream-alert-consumer
+  working_dir: /app
+  volumes:
+   - ./alerting:/app
+  environment:
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   ALERT_TOPIC: fraud_alerts
+   SMTP_HOST: mailhog
+   SMTP_PORT: 1025
+  command: >
+   sh -c "pip install --no-cache-dir confluent-kafka requests >/dev/null 2>&1 && python alert_consumer.py"
+  depends_on:
+   kafka-init:
+    condition: service_completed_successfully
+   mailhog:
+    condition: service_started
+  profiles:
+   - apps
+  networks:
+   - finstream
+
+ mailhog:
+  image: mailhog/mailhog:v1.0.1
+  container_name: finstream-mailhog
+  ports:
+   - "1025:1025"
+   - "8025:8025"
+  networks:
+   - finstream
+
+networks:
+ finstream:
+  driver: bridge
+
+volumes:
+ redis-data:
+ clickhouse-data:
+ postgres-data:
+ superset-home:
+ grafana-data:
+ prometheus-data:
+ mlflow-data:

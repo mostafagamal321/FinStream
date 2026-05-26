@@ -5,6 +5,11 @@ __pycache__/
 .venv/
 venv/
 .env
+*.env
+.docker/
+airflow/logs/
+*.pyc
+
 
 # Data / artifacts
 /data/raw/*
@@ -29,3 +34,5 @@ s3_local_cache/
 clickhouse_data/
 postgres_data/
 redis_data/
+
+Aws-access-keys.txt
