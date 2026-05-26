@@ -12,12 +12,12 @@ airflow/logs/
 
 
 # Data / artifacts
-/data/raw/*
+
 !/data/raw/.gitkeep
 /data/sample/*
 !/data/sample/.gitkeep
 *.parquet
-*.csv
+
 *.jsonl
 *.log
 
@@ -36,4 +36,3 @@ postgres_data/
 redis_data/
 
 Aws-access-keys.txt
-data/raw/**/*.csv
