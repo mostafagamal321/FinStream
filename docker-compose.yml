@@ -1,20 +1,22 @@
 name: finstream
 
 x-aws-env: &aws-env
-  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-dummy}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-dummy}
   AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
-  AWS_REGION: ${AWS_REGION}
-  FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
-  FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET}
-  MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET:-finstream-local-bronze}
+  FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET:-finstream-local-silver}
+  FINSTREAM_GOLD_BUCKET: ${FINSTREAM_GOLD_BUCKET:-finstream-local-gold}
+  FINSTREAM_CHECKPOINT_BUCKET: ${FINSTREAM_CHECKPOINT_BUCKET:-finstream-local-checkpoints}
+  MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET:-finstream-local-mlflow}
 
 x-airflow-common: &airflow-common
   image: apache/airflow:2.9.3-python3.11
   env_file: .env
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-finstream}:${POSTGRES_PASSWORD:-finstream}@postgres:5432/${POSTGRES_DB:-airflow}
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
@@ -45,20 +47,24 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
       KAFKA_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://kafka:9093
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_DEFAULT_REPLICATION_FACTOR: 1
       KAFKA_MIN_INSYNC_REPLICAS: 1
+
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_NUM_PARTITIONS: 3
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_LOG_RETENTION_HOURS: 24
       KAFKA_LOG_SEGMENT_BYTES: 1073741824
+
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
     volumes:
       - kafka-data:/var/lib/kafka/data
@@ -107,7 +113,7 @@ services:
       bash -c '
         echo "Creating FinStream Kafka topics...";
 
-        for topic in transactions market_ticks news_events fx_rates fraud_alerts dlq raw_audit_events; do
+        for topic in transactions_raw market_ticks_raw news_raw fx_rates_raw fraud_alerts dead_letter_queue raw_audit_events; do
           kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
             --topic $$topic \
             --partitions 3 \
@@ -118,6 +124,26 @@ services:
         kafka-topics --bootstrap-server kafka:9092 --list;
       '
     restart: "no"
+    networks:
+      - finstream
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: finstream-kafka-ui
+    profiles:
+      - kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    ports:
+      - "8085:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: finstream-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+    mem_limit: 512m
     networks:
       - finstream
 
@@ -155,21 +181,23 @@ services:
       REDIS_PORT: 6379
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         jobmanager.memory.process.size: 768m
         parallelism.default: 1
         state.backend: rocksdb
-        state.checkpoints.dir: s3://${FINSTREAM_BRONZE_BUCKET}/flink/checkpoints
+        state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
         execution.checkpointing.interval: 10000
         metrics.reporters: prom
         metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
         metrics.reporter.prom.port: 9249
-        s3.access-key: ${AWS_ACCESS_KEY_ID}
-        s3.secret-key: ${AWS_SECRET_ACCESS_KEY}
-        s3.region: ${AWS_REGION}
+        s3.access-key: ${AWS_ACCESS_KEY_ID:-dummy}
+        s3.secret-key: ${AWS_SECRET_ACCESS_KEY:-dummy}
+        s3.region: ${AWS_REGION:-us-east-1}
     volumes:
       - ./flink/jobs:/opt/flink/usrlib
+      - flink-checkpoints:/tmp/flink/checkpoints
     depends_on:
       kafka:
         condition: service_healthy
@@ -195,21 +223,23 @@ services:
       REDIS_PORT: 6379
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 1
         taskmanager.memory.process.size: 1024m
         parallelism.default: 1
         state.backend: rocksdb
-        state.checkpoints.dir: s3://${FINSTREAM_BRONZE_BUCKET}/flink/checkpoints
+        state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
         metrics.reporters: prom
         metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
         metrics.reporter.prom.port: 9249
-        s3.access-key: ${AWS_ACCESS_KEY_ID}
-        s3.secret-key: ${AWS_SECRET_ACCESS_KEY}
-        s3.region: ${AWS_REGION}
+        s3.access-key: ${AWS_ACCESS_KEY_ID:-dummy}
+        s3.secret-key: ${AWS_SECRET_ACCESS_KEY:-dummy}
+        s3.region: ${AWS_REGION:-us-east-1}
     volumes:
       - ./flink/jobs:/opt/flink/usrlib
+      - flink-checkpoints:/tmp/flink/checkpoints
     depends_on:
       flink-jobmanager:
         condition: service_started
@@ -225,9 +255,9 @@ services:
       - streaming
     env_file: .env
     environment:
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-finstream}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-finstream}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-finstream}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
       - "8123:8123"
@@ -297,12 +327,16 @@ services:
     profiles:
       - orchestration
     env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-finstream}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finstream}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
     ports:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finstream} -d ${POSTGRES_DB:-airflow}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -319,7 +353,14 @@ services:
     command: >
       -c "
       airflow db migrate &&
-      airflow users create --username $$AIRFLOW_ADMIN_USER --password $$AIRFLOW_ADMIN_PASSWORD --firstname FinStream --lastname Admin --role Admin --email $$AIRFLOW_ADMIN_EMAIL || true
+      airflow users create
+      --username $${AIRFLOW_ADMIN_USER:-admin}
+      --password $${AIRFLOW_ADMIN_PASSWORD:-admin}
+      --firstname FinStream
+      --lastname Admin
+      --role Admin
+      --email $${AIRFLOW_ADMIN_EMAIL:-admin@finstream.local}
+      || true
       "
     depends_on:
       postgres:
@@ -355,13 +396,16 @@ services:
     mem_limit: 1g
 
   superset:
-    image: apache/superset:4.1.2-dev
+    image: apache/superset:4.1.2
     container_name: finstream-superset
     profiles:
       - analytics
     env_file: .env
     environment:
-      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-this-secret-key}
+      SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-admin}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+      SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@finstream.local}
     ports:
       - "8090:8088"
     volumes:
@@ -372,7 +416,13 @@ services:
     command: >
       /bin/sh -c "
       superset db upgrade &&
-      superset fab create-admin --username $$SUPERSET_ADMIN_USER --firstname FinStream --lastname Admin --email $$SUPERSET_ADMIN_EMAIL --password $$SUPERSET_ADMIN_PASSWORD || true &&
+      superset fab create-admin
+      --username $${SUPERSET_ADMIN_USER:-admin}
+      --firstname FinStream
+      --lastname Admin
+      --email $${SUPERSET_ADMIN_EMAIL:-admin@finstream.local}
+      --password $${SUPERSET_ADMIN_PASSWORD:-admin}
+      || true &&
       superset init &&
       superset run -h 0.0.0.0 -p 8088 --with-threads
       "
@@ -400,7 +450,7 @@ services:
     profiles:
       - monitoring
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
@@ -429,7 +479,11 @@ services:
     command: >
       /bin/sh -c "
       pip install --no-cache-dir boto3 >/dev/null 2>&1 &&
-      mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlflow/mlflow.db --default-artifact-root s3://$$MLFLOW_ARTIFACT_BUCKET/artifacts
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root s3://$${MLFLOW_ARTIFACT_BUCKET}/artifacts
       "
     mem_limit: 1g
     networks:
@@ -443,6 +497,7 @@ services:
     ports:
       - "1025:1025"
       - "8025:8025"
+    mem_limit: 256m
     networks:
       - finstream
 
@@ -460,12 +515,16 @@ services:
       SMTP_HOST: mailhog
       SMTP_PORT: 1025
     command: >
-      sh -c "pip install --no-cache-dir confluent-kafka requests >/dev/null 2>&1 && python alert_consumer.py"
+      sh -c "
+      pip install --no-cache-dir confluent-kafka requests >/dev/null 2>&1 &&
+      python alert_consumer.py
+      "
     depends_on:
       kafka-init:
         condition: service_completed_successfully
       mailhog:
         condition: service_started
+    mem_limit: 512m
     networks:
       - finstream
 
@@ -476,19 +535,33 @@ services:
       - setup
     environment:
       <<: *aws-env
-    entrypoint: >
-      /bin/sh -c "
-      if [ \"$$AWS_REGION\" = \"us-east-1\" ]; then
-        aws s3api create-bucket --bucket $$FINSTREAM_BRONZE_BUCKET --region $$AWS_REGION || true;
-        aws s3api create-bucket --bucket $$FINSTREAM_SILVER_BUCKET --region $$AWS_REGION || true;
-        aws s3api create-bucket --bucket $$MLFLOW_ARTIFACT_BUCKET --region $$AWS_REGION || true;
-      else
-        aws s3api create-bucket --bucket $$FINSTREAM_BRONZE_BUCKET --region $$AWS_REGION --create-bucket-configuration LocationConstraint=$$AWS_REGION || true;
-        aws s3api create-bucket --bucket $$FINSTREAM_SILVER_BUCKET --region $$AWS_REGION --create-bucket-configuration LocationConstraint=$$AWS_REGION || true;
-        aws s3api create-bucket --bucket $$MLFLOW_ARTIFACT_BUCKET --region $$AWS_REGION --create-bucket-configuration LocationConstraint=$$AWS_REGION || true;
-      fi;
-      aws s3 ls;
-      "
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      set -e
+
+      for bucket in \
+        "$$FINSTREAM_BRONZE_BUCKET" \
+        "$$FINSTREAM_SILVER_BUCKET" \
+        "$$FINSTREAM_GOLD_BUCKET" \
+        "$$FINSTREAM_CHECKPOINT_BUCKET" \
+        "$$MLFLOW_ARTIFACT_BUCKET"
+      do
+        echo "Creating bucket: $$bucket"
+
+        if [ "$$AWS_REGION" = "us-east-1" ]; then
+          aws s3api create-bucket \
+            --bucket "$$bucket" \
+            --region "$$AWS_REGION" || true
+        else
+          aws s3api create-bucket \
+            --bucket "$$bucket" \
+            --region "$$AWS_REGION" \
+            --create-bucket-configuration LocationConstraint="$$AWS_REGION" || true
+        fi
+      done
+
+      echo "Available buckets:"
+      aws s3 ls
     networks:
       - finstream
 
@@ -501,6 +574,7 @@ volumes:
   grafana-data:
   prometheus-data:
   mlflow-data:
+  flink-checkpoints:
 
 networks:
   finstream:
