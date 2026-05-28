@@ -36,3 +36,4 @@ postgres_data/
 redis_data/
 
 Aws-access-keys.txt
+data/raw/**/*.csv

@@ -3,22 +3,35 @@
   "name": "TransactionEvent",
   "namespace": "finstream.transactions",
   "fields": [
-    {"name": "TransactionID", "type": "string"},
-    {"name": "isFraud", "type": ["null", "int"], "default": null},
-    {"name": "TransactionDT", "type": "long"},
-    {"name": "TransactionAmt", "type": "double"},
-    {"name": "ProductCD", "type": ["null", "string"], "default": null},
-    {"name": "card1", "type": ["null", "int"], "default": null},
-    {"name": "card2", "type": ["null", "int"], "default": null},
-    {"name": "card3", "type": ["null", "int"], "default": null},
-    {"name": "card4", "type": ["null", "string"], "default": null},
-    {"name": "card5", "type": ["null", "int"], "default": null},
-    {"name": "card6", "type": ["null", "string"], "default": null},
-    {"name": "addr1", "type": ["null", "int"], "default": null},
-    {"name": "addr2", "type": ["null", "int"], "default": null},
-    {"name": "dist1", "type": ["null", "double"], "default": null},
-    {"name": "dist2", "type": ["null", "double"], "default": null},
-    {"name": "P_emaildomain", "type": ["null", "string"], "default": null},
-    {"name": "R_emaildomain", "type": ["null", "string"], "default": null}
+    { "name": "event_id", "type": "string" },
+    { "name": "transaction_id", "type": "string" },
+
+    { "name": "event_time", "type": "string" },
+    { "name": "ingestion_time", "type": "string" },
+    { "name": "source", "type": "string", "default": "ieee_cis" },
+
+    { "name": "split", "type": "string", "default": "train" },
+    { "name": "transaction_dt", "type": "long" },
+
+    { "name": "amount", "type": "double" },
+    { "name": "currency", "type": "string", "default": "USD" },
+    { "name": "product_cd", "type": ["null", "string"], "default": null },
+
+    { "name": "customer_id", "type": "string" },
+    { "name": "card_id", "type": "string" },
+    { "name": "merchant_id", "type": "string" },
+
+    { "name": "card_brand", "type": ["null", "string"], "default": null },
+    { "name": "card_type", "type": ["null", "string"], "default": null },
+    { "name": "addr1", "type": ["null", "double"], "default": null },
+    { "name": "addr2", "type": ["null", "double"], "default": null },
+
+    { "name": "payer_email_domain", "type": ["null", "string"], "default": null },
+    { "name": "receiver_email_domain", "type": ["null", "string"], "default": null },
+
+    { "name": "device_type", "type": ["null", "string"], "default": null },
+    { "name": "device_info", "type": ["null", "string"], "default": null },
+
+    { "name": "is_fraud", "type": ["null", "int"], "default": null }
   ]
 }
