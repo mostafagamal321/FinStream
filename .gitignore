@@ -11,16 +11,6 @@ airflow/logs/
 *.pyc
 
 
-# Data / artifacts
-/data/raw/*
-!/data/raw/.gitkeep
-/data/sample/*
-!/data/sample/.gitkeep
-*.parquet
-*.csv
-*.jsonl
-*.log
-
 # IDE
 .vscode/
 .idea/

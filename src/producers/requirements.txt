@@ -1,0 +1,7 @@
+# this requirement file only for my local env testing , it shouldn't be included in the production level code 
+
+confluent-kafka
+python-dotenv
+requests
+websocket-client
+fastavro
