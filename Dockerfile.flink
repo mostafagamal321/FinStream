@@ -1,0 +1,29 @@
+FROM flink:1.19.1-scala_2.12-java17
+
+USER root
+
+RUN apt-get update && apt-get install -y \
+    openjdk-17-jdk-headless \
+    maven \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Enable Flink S3 Hadoop filesystem plugin
+RUN mkdir -p /opt/flink/plugins/s3-fs-hadoop && \
+    cp /opt/flink/opt/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/
+
+WORKDIR /opt/flink/usrlib
+
+COPY flink-jobs ./flink-jobs
+
+RUN java -version && javac -version && mvn -version
+
+RUN cd flink-jobs && mvn clean package -DskipTests
+
+RUN mkdir -p /opt/flink/jobs && \
+    cp flink-jobs/target/flink-jobs-1.0.0.jar /opt/flink/jobs/flink-jobs.jar
+
+USER flink

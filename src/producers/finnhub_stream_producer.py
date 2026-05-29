@@ -18,7 +18,8 @@ from src.producers.producer_utils import (
     create_avro_producer,
     delivery_report,
 )
-
+"""This File is a real Time kafka producer that streams live trade
+    data From Finnhub into the project """
 
 producer = create_avro_producer(
     bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
@@ -28,6 +29,9 @@ producer = create_avro_producer(
 
 
 def on_open(ws) -> None:
+    """The program connects to Finnhub's WebSocket server using  API key. 
+       The moment the connection is established, on_open fires and sends a subscription message for each stock symbol — basically telling Finnhub 
+       'hey, I want live trade data for AAPL, GOOGL, AMZN....'"""
     print("[FINNHUB STREAM] WebSocket opened")
 
     for symbol in DEFAULT_SYMBOLS:
@@ -35,12 +39,14 @@ def on_open(ws) -> None:
             "type": "subscribe",
             "symbol": symbol,
         }
-
+        # sending the required symbol data to the websocket using ws.send , the json.dumps just transfer the python to json string  
         ws.send(json.dumps(subscribe_message))
         print(f"[FINNHUB STREAM] Subscribed to {symbol}")
 
 
 def on_message(ws, message: str) -> None:
+    """Every time a trade happens in the market, Finnhub pushes a message to your WebSocket. on_message receives it — but not every message is a trade. 
+    Some are just pings or system messages. So the first thing the code does is check the message type and silently drop anything that isn't "trade"."""
     try:
         payload = json.loads(message)
 

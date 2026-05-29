@@ -255,86 +255,77 @@ services:
    - finstream
 
  flink-jobmanager:
-  image: flink:1.19.1-scala_2.12-java17
+  build:
+   context: .
+   dockerfile: Dockerfile.flink
   container_name: finstream-flink-jobmanager
-  profiles:
-   - streaming
-  command: jobmanager
   ports:
    - "8082:8081"
-   - "9249:9249"
+  command: jobmanager
+  env_file:
+   - .env
   environment:
-   <<: *aws-env
-   REDIS_HOST: redis
-   REDIS_PORT: 6379
+   JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
-   FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
-   FLINK_PROPERTIES: |
-    jobmanager.rpc.address: flink-jobmanager
-    jobmanager.memory.process.size: 768m
-    parallelism.default: 1
-    state.backend: rocksdb
-    state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
-    execution.checkpointing.interval: 10000
-    metrics.reporters: prom
-    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
-    metrics.reporter.prom.port: 9249
-    s3.access-key: ${AWS_ACCESS_KEY_ID:-dummy}
-    s3.secret-key: ${AWS_SECRET_ACCESS_KEY:-dummy}
-    s3.region: ${AWS_REGION:-us-east-1}
-  volumes:
-   - ./flink/jobs:/opt/flink/usrlib
-   - flink-checkpoints:/tmp/flink/checkpoints
+
+   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+   AWS_REGION: ${AWS_REGION}
+   AWS_DEFAULT_REGION: ${AWS_REGION}
+
+   FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+   FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET}
+   MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET}
+
+   S3_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+   S3_BRONZE_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze
+   S3_SILVER_PATH: s3://${FINSTREAM_SILVER_BUCKET}/silver
+
   depends_on:
    kafka:
     condition: service_healthy
    schema-registry:
     condition: service_healthy
-   redis:
-    condition: service_healthy
-  mem_limit: 1g
   networks:
    - finstream
-
+ ##
  flink-taskmanager:
-  image: flink:1.19.1-scala_2.12-java17
-  container_name: finstream-flink-taskmanager
-  profiles:
-   - streaming
+  build:
+   context: .
+   dockerfile: Dockerfile.flink
+  # container_name: finstream-flink-taskmanager
   command: taskmanager
-  ports:
-   - "9250:9249"
+  #  CHANGED: removed container_name (can't have duplicate names across replicas)
+  # container_name: finstream-flink-taskmanager
+  deploy:
+   replicas: 2 #  2 TaskManagers × 4 slots each = 8 total slots
+  env_file:
+   - .env
   environment:
-   <<: *aws-env
-   REDIS_HOST: redis
-   REDIS_PORT: 6379
+   JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+   TASK_MANAGER_NUMBER_OF_TASK_SLOTS: 4
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
-   FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
-   FLINK_PROPERTIES: |
-    jobmanager.rpc.address: flink-jobmanager
-    taskmanager.numberOfTaskSlots: 1
-    taskmanager.memory.process.size: 1024m
-    parallelism.default: 1
-    state.backend: rocksdb
-    state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
-    metrics.reporters: prom
-    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
-    metrics.reporter.prom.port: 9249
-    s3.access-key: ${AWS_ACCESS_KEY_ID:-dummy}
-    s3.secret-key: ${AWS_SECRET_ACCESS_KEY:-dummy}
-    s3.region: ${AWS_REGION:-us-east-1}
-  volumes:
-   - ./flink/jobs:/opt/flink/usrlib
-   - flink-checkpoints:/tmp/flink/checkpoints
+
+   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+   AWS_REGION: ${AWS_REGION}
+   AWS_DEFAULT_REGION: ${AWS_REGION}
+
+   FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+   FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET}
+   MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET}
+
+   S3_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+   S3_BRONZE_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze
+   S3_SILVER_PATH: s3://${FINSTREAM_SILVER_BUCKET}/silver
+
   depends_on:
-   flink-jobmanager:
-    condition: service_started
-  mem_limit: 1g
+   - flink-jobmanager
   networks:
    - finstream
-
+ ##
  clickhouse:
   image: clickhouse/clickhouse-server:24.7
   container_name: finstream-clickhouse
