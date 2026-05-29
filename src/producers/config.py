@@ -48,6 +48,13 @@ TOPIC_DEAD_LETTER_QUEUE = os.getenv(
     "dead_letter_queue",
 )
 
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+FINSTREAM_BRONZE_BUCKET = os.getenv("FINSTREAM_BRONZE_BUCKET", "")
+S3_TRANSACTIONS_BRONZE_PREFIX = os.getenv(
+    "S3_TRANSACTIONS_BRONZE_PREFIX",
+    "bronze/transactions_raw"
+)
+
 TRAIN_TRANSACTION_PATH = Path(
     os.getenv(
         "TRAIN_TRANSACTION_PATH",

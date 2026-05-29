@@ -10,14 +10,13 @@ venv/
 airflow/logs/
 *.pyc
 
-
 # Data / artifacts
+data/
+!/data/.gitkeep
 
-!/data/raw/.gitkeep
-/data/sample/*
-!/data/sample/.gitkeep
 *.parquet
-
+*.csv
+*.json
 *.jsonl
 *.log
 
@@ -35,4 +34,5 @@ clickhouse_data/
 postgres_data/
 redis_data/
 
+# Secrets
 Aws-access-keys.txt
