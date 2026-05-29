@@ -10,6 +10,7 @@ venv/
 airflow/logs/
 *.pyc
 
+<<<<<<< HEAD
 # Data / artifacts
 data/
 !/data/.gitkeep
@@ -19,6 +20,8 @@ data/
 *.json
 *.jsonl
 *.log
+=======
+>>>>>>> 25a22249404e7312aff71c8b2f2cf666e40b238a
 
 # IDE
 .vscode/

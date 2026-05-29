@@ -1,14 +1,18 @@
 {
-  "type": "record",
-  "name": "NewsEvent",
-  "namespace": "finstream.news",
-  "fields": [
-    {"name": "ticker", "type": ["null", "string"], "default": null},
-    {"name": "company", "type": ["null", "string"], "default": null},
-    {"name": "title", "type": "string"},
-    {"name": "url", "type": ["null", "string"], "default": null},
-    {"name": "published_at", "type": "string"},
-    {"name": "sentiment", "type": ["null", "string"], "default": null},
-    {"name": "score", "type": ["null", "double"], "default": null}
-  ]
+ "type": "record",
+ "name": "MarketNews",
+ "namespace": "finstream.news",
+ "fields": [
+  { "name": "event_id", "type": "string" },
+  { "name": "event_time", "type": "long", "logicalType": "timestamp-millis" },
+  { "name": "published_at", "type": ["null", "string"], "default": null },
+  { "name": "source_name", "type": ["null", "string"], "default": null },
+  { "name": "author", "type": ["null", "string"], "default": null },
+  { "name": "title", "type": "string" },
+  { "name": "description", "type": ["null", "string"], "default": null },
+  { "name": "url", "type": ["null", "string"], "default": null },
+  { "name": "symbol_query", "type": ["null", "string"], "default": null },
+  { "name": "source", "type": "string" },
+  { "name": "raw_payload", "type": "string" }
+ ]
 }

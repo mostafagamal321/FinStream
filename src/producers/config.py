@@ -83,6 +83,27 @@ TEST_IDENTITY_PATH = Path(
     )
 )
 
+HISTORICAL_MARKET_PATH = Path(
+    os.getenv(
+        "HISTORICAL_MARKET_PATH",
+        str(RAW_DATA_DIR / "historical_market.csv"),
+    )
+)
+
+HISTORICAL_NEWS_PATH = Path(
+    os.getenv(
+        "HISTORICAL_NEWS_PATH",
+        str(RAW_DATA_DIR / "historical_news.csv"),
+    )
+)
+
+REPLAY_DELAY_SECONDS = float(
+    os.getenv(
+        "REPLAY_DELAY_SECONDS",
+        "1",
+    )
+)
+
 TRANSACTION_SCHEMA_PATH = SCHEMA_DIR / "transactions" / "transaction_event.avsc"
 MARKET_TICK_SCHEMA_PATH = SCHEMA_DIR / "market" / "stock_tick_event.avsc"
 NEWS_SCHEMA_PATH = SCHEMA_DIR / "news" / "news_event.avsc"
@@ -90,7 +111,14 @@ FX_RATE_SCHEMA_PATH = SCHEMA_DIR / "fx" / "fx_rate_event.avsc"
 DLQ_SCHEMA_PATH = SCHEMA_DIR / "dlq" / "dead_letter_event.avsc"
 
 
+<<<<<<< HEAD
 def require_env_var(name: str, value: str) -> str:
     if not value:
         raise ValueError(f"Missing required environment variable: {name}")
     return value
+=======
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+
+DEFAULT_SYMBOLS = ["AAPL", "MSFT", "TSLA", "AMZN", "NVDA"]
+>>>>>>> 25a22249404e7312aff71c8b2f2cf666e40b238a

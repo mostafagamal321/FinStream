@@ -1,8 +1,5 @@
 # FinStream — Real-Time Financial Intelligence Platform
 
-
-
-
 ![Project Status](https://img.shields.io/badge/status-in%20progress-yellow)
 ![Build](https://img.shields.io/badge/build-in%20development-orange)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
@@ -13,6 +10,7 @@
 ![Machine Learning](https://img.shields.io/badge/ML-fraud%20detection-purple)
 
 # project architecture
+
 <img width="3020" height="2444" alt="FinStream_Diagram_page-0001 (2)" src="https://github.com/user-attachments/assets/98c2c610-8297-4187-b5e8-c3ab45656344" />
 
 FinStream is a real-time financial intelligence platform that simulates how a modern bank, fintech, or investment-risk team turns fast-moving financial data into business decisions. The platform processes transaction data, stock market data, and company news data to support three use cases: real-time fraud detection, dynamic risk scoring, and market intelligence.
@@ -23,14 +21,14 @@ Financial institutions need to react to financial events as they happen, not aft
 
 ## Data Domains
 
-| Data Domain | Main Use Case | Output |
-|---|---|---|
-| Transaction data | Fraud detection and transaction risk | Fraud score, risk level, fraud alert |
-| Historical transactions | Model training and risk baselines | Fraud model, customer/card risk features |
-| Real-time stock data | Market monitoring | Price anomaly, volume spike, volatility signal |
-| Historical stock data | Market baseline | Normal price/volume behavior |
-| Live news data | Real-time sentiment monitoring | Sentiment signal, news event alert |
-| Historical news data | Sentiment baseline/training | Sentiment trend, correlation with price movement |
+| Data Domain             | Main Use Case                        | Output                                           |
+| ----------------------- | ------------------------------------ | ------------------------------------------------ |
+| Transaction data        | Fraud detection and transaction risk | Fraud score, risk level, fraud alert             |
+| Historical transactions | Model training and risk baselines    | Fraud model, customer/card risk features         |
+| Real-time stock data    | Market monitoring                    | Price anomaly, volume spike, volatility signal   |
+| Historical stock data   | Market baseline                      | Normal price/volume behavior                     |
+| Live news data          | Real-time sentiment monitoring       | Sentiment signal, news event alert               |
+| Historical news data    | Sentiment baseline/training          | Sentiment trend, correlation with price movement |
 
 ## Target Architecture
 
@@ -71,7 +69,19 @@ finstream/
 
 ## First Implementation Phases
 
-
 ## Status
 
-Initial repository 
+Current completed work:
+
+- Dockerized Python producer layer.
+- Kafka and Schema Registry are running through Docker Compose.
+- Producers now run inside Docker instead of local Python.
+- Added Avro serialization through Confluent Schema Registry.
+- Added live market producer using Finnhub REST API.
+- Added real-time market stream producer using Finnhub WebSocket.
+- Added live news producer using NewsAPI.
+- Added historical market CSV replay producer.
+- Added historical news CSV replay producer.
+- Added mapper layer to normalize live and historical data into the same Kafka event contracts.
+- Added Dead Letter Queue support for failed records.
+- Added support for simulating historical CSV data as streaming events.

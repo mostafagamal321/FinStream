@@ -6,8 +6,8 @@ requires-python = ">=3.10"
 dependencies = [
   "pandas",
   "numpy",
-  "faker",
   "confluent-kafka",
+  "fastavro",
   "redis",
   "requests",
   "scikit-learn",
