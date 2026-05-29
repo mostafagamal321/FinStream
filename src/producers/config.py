@@ -88,3 +88,9 @@ MARKET_TICK_SCHEMA_PATH = SCHEMA_DIR / "market" / "stock_tick_event.avsc"
 NEWS_SCHEMA_PATH = SCHEMA_DIR / "news" / "news_event.avsc"
 FX_RATE_SCHEMA_PATH = SCHEMA_DIR / "fx" / "fx_rate_event.avsc"
 DLQ_SCHEMA_PATH = SCHEMA_DIR / "dlq" / "dead_letter_event.avsc"
+
+
+def require_env_var(name: str, value: str) -> str:
+    if not value:
+        raise ValueError(f"Missing required environment variable: {name}")
+    return value
