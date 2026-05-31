@@ -176,7 +176,7 @@ For a more production-style setup, use an IAM role instead of long-lived access 
 <img width="691" height="585" alt="Screenshot 2026-05-30 150521" src="https://github.com/user-attachments/assets/efacb647-a73e-4347-8321-9b2819cbb09b" />
 
 
-### Required S3 Buckets
+### S3 Buckets
 
 The project uses three S3 buckets:
 
@@ -184,5 +184,4 @@ The project uses three S3 buckets:
 finstream-bronze-mostafa-dev
 finstream-silver-mostafa-dev
 finstream-mlflow-mostafa-dev
-
-
+```
