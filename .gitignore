@@ -1,41 +1,101 @@
+# =========================
 # Python
+# =========================
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyo
+*.pyd
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 .venv/
 venv/
+env/
+
+
+# =========================
+# Environment / secrets
+# =========================
 .env
 *.env
-.docker/
-airflow/logs/
-*.pyc
+.env.*
+!.env.example
 
-<<<<<<< HEAD
-# Data / artifacts
-data/
-!/data/.gitkeep
+Aws-access-keys.txt
+aws-access-keys.txt
+*access-key*
+*secret-key*
+*.pem
+*.key
 
+
+# =========================
+# Data / local artifacts
+# =========================
+data/*
+!data/.gitkeep
+!data/sample/
+!data/sample/.gitkeep
+!data/raw/
+!data/raw/.gitkeep
+
+# Keep schemas tracked; ignore generated/local data files.
 *.parquet
 *.csv
-*.json
 *.jsonl
 *.log
-=======
->>>>>>> 25a22249404e7312aff71c8b2f2cf666e40b238a
 
-# IDE
-.vscode/
-.idea/
+# Do not ignore all JSON globally because schemas/configs may use .json.
+# If you need generated JSON data, place it under data/.
 
-# OS
-.DS_Store
-Thumbs.db
 
-# Docker / local
+# =========================
+# Airflow
+# =========================
+airflow/logs/
+airflow/**/__pycache__/
+
+
+# =========================
+# Docker / local volumes
+# =========================
+.docker/
 s3_local_cache/
 clickhouse_data/
 postgres_data/
 redis_data/
+kafka-data/
+flink-checkpoints/
+mlflow-data/
+prometheus-data/
+grafana-data/
+superset-home/
 
-# Secrets
-Aws-access-keys.txt
+
+# =========================
+# Java / Maven / Flink build artifacts
+# =========================
+.m2/
+target/
+flink-jobs/target/
+*.class
+
+# Runtime-built Flink job jars should be rebuilt locally, not committed.
+flink/jobs/*.jar
+
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db

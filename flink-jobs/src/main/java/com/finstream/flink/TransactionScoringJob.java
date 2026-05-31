@@ -18,11 +18,20 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.api.common.serialization.SimpleStringEncoder;
+import org.apache.flink.configuration.MemorySize;
+import org.apache.flink.connector.file.sink.FileSink;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.DateTimeBucketAssigner;
+import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
+
 import java.io.Serializable;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -71,6 +80,20 @@ public class TransactionScoringJob {
         scoredTransactions
                 .addSink(createClickHouseSink())
                 .name("clickhouse_fraud_scores_rt_sink");
+
+        String s3ScoredPath = getEnv("S3_TRANSACTIONS_SCORED_PATH", "");
+
+        if (!s3ScoredPath.isBlank()) {
+            scoredTransactions
+                    .map(new ScoredTransactionJsonMapper())
+                    .name("scored_transaction_to_json")
+                    .sinkTo(createS3ScoredTransactionsSink(s3ScoredPath))
+                    .name("s3_transactions_scored_sink");
+
+            System.out.println("S3 scored transactions sink enabled. path=" + s3ScoredPath);
+        } else {
+            System.out.println("S3 scored transactions sink disabled. S3_TRANSACTIONS_SCORED_PATH is empty.");
+        }
 
         env.execute("FinStream Transaction Baseline Scoring Job");
     }
@@ -202,6 +225,38 @@ public class TransactionScoringJob {
         statement.setString(18, scored.kafkaTopic);
         statement.setInt(19, scored.kafkaPartition);
         statement.setLong(20, scored.kafkaOffset);
+    }
+
+    private static FileSink<String> createS3ScoredTransactionsSink(String s3OutputPath) {
+        return FileSink
+                .forRowFormat(
+                        new Path(s3OutputPath),
+                        new SimpleStringEncoder<String>("UTF-8")
+                )
+                .withBucketAssigner(new DateTimeBucketAssigner<>("yyyy-MM-dd/HH"))
+                .withRollingPolicy(
+                        DefaultRollingPolicy.builder()
+                                .withRolloverInterval(Duration.ofMinutes(5))
+                                .withInactivityInterval(Duration.ofMinutes(2))
+                                .withMaxPartSize(MemorySize.ofMebiBytes(128))
+                                .build()
+                )
+                .build();
+    }
+
+    public static class ScoredTransactionJsonMapper
+            implements MapFunction<ScoredTransaction, String> {
+
+        private transient ObjectMapper objectMapper;
+
+        @Override
+        public String map(ScoredTransaction scored) throws Exception {
+            if (objectMapper == null) {
+                objectMapper = new ObjectMapper();
+            }
+
+            return objectMapper.writeValueAsString(scored);
+        }
     }
 
     public static class TransactionAvroDeserializationSchema
