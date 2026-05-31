@@ -22,7 +22,7 @@ x-airflow-common: &airflow-common
   AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
   AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
   <<: *aws-env
- volumes:
+ volumes: 
   - ./airflow/dags:/opt/airflow/dags
   - ./airflow/logs:/opt/airflow/logs
   - ./airflow/plugins:/opt/airflow/plugins
@@ -265,18 +265,22 @@ services:
    - "9249:9249"
   environment:
    <<: *aws-env
+   ENABLE_BUILT_IN_PLUGINS: flink-s3-fs-hadoop-1.19.1.jar
    REDIS_HOST: redis
    REDIS_PORT: 6379
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
-   FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
+   CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/finstream
+   CLICKHOUSE_USER: ${CLICKHOUSE_USER:-finstream}
+   CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-finstream}
+   ENABLE_FLINK_CHECKPOINTS: ${ENABLE_FLINK_CHECKPOINTS:-true}
+   FLINK_CHECKPOINT_DIR: s3://${FINSTREAM_CHECKPOINT_BUCKET}/flink-checkpoints/transactions
+   S3_TRANSACTIONS_SCORED_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze/transactions_scored_flink/
    FLINK_PROPERTIES: |
     jobmanager.rpc.address: flink-jobmanager
     jobmanager.memory.process.size: 768m
     parallelism.default: 1
     state.backend: rocksdb
-    state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
-    execution.checkpointing.interval: 10000
     metrics.reporters: prom
     metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
     metrics.reporter.prom.port: 9249
@@ -307,11 +311,17 @@ services:
    - "9250:9249"
   environment:
    <<: *aws-env
+   ENABLE_BUILT_IN_PLUGINS: flink-s3-fs-hadoop-1.19.1.jar
+   ENABLE_FLINK_CHECKPOINTS: ${ENABLE_FLINK_CHECKPOINTS:-true}
+   FLINK_CHECKPOINT_DIR: s3://${FINSTREAM_CHECKPOINT_BUCKET}/flink-checkpoints/transactions
+   S3_TRANSACTIONS_SCORED_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze/transactions_scored_flink/
    REDIS_HOST: redis
    REDIS_PORT: 6379
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
-   FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
+   CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/finstream
+   CLICKHOUSE_USER: ${CLICKHOUSE_USER:-finstream}
+   CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-finstream}
    FLINK_PROPERTIES: |
     jobmanager.rpc.address: flink-jobmanager
     taskmanager.numberOfTaskSlots: 1
