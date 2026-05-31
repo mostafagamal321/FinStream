@@ -17,7 +17,7 @@ FinStream is a real-time financial intelligence platform that simulates how a mo
 
 ## Business Case
 
-Financial institutions need to react to financial events as they happen, not after daily batch processing. FinStream uses transaction events to detect suspicious payment behavior, historical and real-time transaction patterns to update risk indicators, and stock/news streams to detect market anomalies and sentiment-driven market signals.
+Financial institutions need to react to financial events as they happen, not after daily batch processing. FinStream uses transaction events to detect **suspicious payment behavior**, historical and real-time transaction patterns to update **risk **indicators, and **stock/news streams** to detect market anomalies and sentiment-driven market signals.
 
 ## Data Domains
 
@@ -40,7 +40,7 @@ Sources
        1. Amazon S3 Bronze raw audit events
        2. ClickHouse real-time scores and signals
        3. Kafka alert topics
-  -> Amazon S3 + Iceberg Medallion Lakehouse: Bronze -> Silver -> Gold
+  -> Amazon S3  Lakehouse: Bronze -> Silver 
   -> Spark/dbt/Great Expectations Batch Processing
   -> MLflow Model Training + Registry
   -> Redis Feature Store Updates
@@ -85,3 +85,103 @@ Current completed work:
 - Added mapper layer to normalize live and historical data into the same Kafka event contracts.
 - Added Dead Letter Queue support for failed records.
 - Added support for simulating historical CSV data as streaming events.
+---
+
+## Running The project So far: 
+#### Start the core services:
+```bash
+docker compose up -d kafka schema-registry
+```
+#### Running Producers:
+```bash
+docker compose up -d --force-recreate historical-market-producer
+docker compose up -d --force-recreate finnhub-stream-producer
+docker compose up -d --force-recreate historical-news-producer
+docker compose up -d --force-recreate news-producer
+```
+#### Check Proudcers Logs:
+```bash
+docker compose logs -f historical-market-producer
+docker compose logs -f finnhub-stream-producer
+docker compose logs -f historical-news-producer
+docker compose logs -f news-producer
+```
+## Service URLs:
+| Service           | URL                     |
+| ----------------- | ----------------------- |
+| Kafka Broker      | `localhost:29092`       |
+| Schema Registry   | `http://localhost:8081` |
+| Flink Dashboard   | `http://localhost:8082` |
+| ClickHouse HTTP   | `http://localhost:8123` |
+| ClickHouse Native | `localhost:9000`        |
+| Airflow           | `http://localhost:8080` |
+| Superset          | `http://localhost:8088` |
+| Prometheus        | `http://localhost:9090` |
+| Grafana           | `http://localhost:3000` |
+---
+## Recent Data Transformation
+
+The market data was transformed from a wide historical dataframe format into normalized event records.
+
+### Before
+
+The raw historical market data came in a wide format:
+
+```text
+Date | Close | Close.1 | Close.2 | High | High.1 | Open | Open.1 | Volume | Volume.1 ...
+```
+<img width="1773" height="306" alt="Screenshot 2026-05-31 205453" src="https://github.com/user-attachments/assets/a60de76c-f835-4860-a480-2e799c73b3c1" />
+
+This format is not ideal for Kafka, Flink, or S3 partitioned event storage.
+
+### After
+
+The data is converted into one event per symbol per timestamp:
+
+```text
+event_id
+event_time
+event_time_ms
+ingestion_time_ms
+source_lag_ms
+symbol
+price
+open_price
+high_price
+low_price
+close_price
+volume
+source
+anomaly_flag
+raw_payload
+```
+
+Example:
+
+```text
+hist-MSFT-1519862400000 | MSFT | 74.672501 | historical_market_replay | LATE_SOURCE_EVENT
+hist-AMZN-1519862400000 | AMZN | 174.570053 | historical_market_replay | LATE_SOURCE_EVENT
+hist-NVDA-1519862400000 | NVDA | 29.039000 | historical_market_replay | LATE_SOURCE_EVENT
+```
+<img width="1708" height="274" alt="Screenshot 2026-05-31 195145" src="https://github.com/user-attachments/assets/49da72a6-94cc-4df0-bfc6-042b3ab18d6a" />
+
+---
+
+## Creating IAM Roles and AWS Access
+
+FinStream needs permission to read from and write to the project S3 buckets. For local development, the simplest setup is to create an IAM user with limited S3 permissions and place its access keys in the `.env` file.
+
+For a more production-style setup, use an IAM role instead of long-lived access keys. IAM roles are safer because credentials are temporary and managed by AWS.
+<img width="691" height="585" alt="Screenshot 2026-05-30 150521" src="https://github.com/user-attachments/assets/efacb647-a73e-4347-8321-9b2819cbb09b" />
+
+
+### Required S3 Buckets
+
+The project uses three S3 buckets:
+
+```text
+finstream-bronze-mostafa-dev
+finstream-silver-mostafa-dev
+finstream-mlflow-mostafa-dev
+
+
