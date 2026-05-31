@@ -172,6 +172,7 @@ hist-NVDA-1519862400000 | NVDA | 29.039000 | historical_market_replay | LATE_SOU
 FinStream needs permission to read from and write to the project S3 buckets. For local development, the simplest setup is to create an IAM user with limited S3 permissions and place its access keys in the `.env` file.
 
 For a more production-style setup, use an IAM role instead of long-lived access keys. IAM roles are safer because credentials are temporary and managed by AWS.
+
 <img width="691" height="585" alt="Screenshot 2026-05-30 150521" src="https://github.com/user-attachments/assets/efacb647-a73e-4347-8321-9b2819cbb09b" />
 
 
