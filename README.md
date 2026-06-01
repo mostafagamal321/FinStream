@@ -5,6 +5,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
 ![Kafka](https://img.shields.io/badge/kafka-streaming-black)
+![Static Badge](https://img.shields.io/badge/Spark-Batch%20Processing-Brightgreen)
 ![Flink](https://img.shields.io/badge/flink-real--time-orange)
 ![ClickHouse](https://img.shields.io/badge/clickhouse-analytics-yellow)
 ![Machine Learning](https://img.shields.io/badge/ML-fraud%20detection-purple)
