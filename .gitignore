@@ -27,3 +27,30 @@ redis_data/
 
 Aws-access-keys.txt
 data/raw/**/*.csv
+
+
+producer_state/*.json
+producer_state/*.tmp
+
+
+data/downloads/
+
+
+market_news_all_check
+market_news_check
+market_ticks_all
+market_ticks_live_fixed
+market_ticks_sample
+market_ticks_today
+
+
+# Java / Maven build output
+target/
+flink-jobs/target/
+*.class
+*.jar
+
+
+# Local runtime state
+monitoring/.health_state.json
+producer_state/
