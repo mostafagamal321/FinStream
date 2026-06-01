@@ -1,4 +1,5 @@
-<img width="233" height="53" alt="image" src="https://github.com/user-attachments/assets/9180cfc1-1f66-4a18-9b85-3a312649bcdc" /><img width="307" height="53" alt="image" src="https://github.com/user-attachments/assets/69824042-2a87-43b4-b099-d570ae62a7a4" /># FinStream — Real-Time Financial Intelligence Platform
+# FinStream — Real-Time Financial Intelligence Platform
+<img width="233" height="53" alt="image" src="https://github.com/user-attachments/assets/9180cfc1-1f66-4a18-9b85-3a312649bcdc" /><img width="307" height="53" alt="image" src="https://github.com/user-attachments/assets/69824042-2a87-43b4-b099-d570ae62a7a4" />
 
 ![Project Status](https://img.shields.io/badge/status-in%20progress-yellow)
 ![Build](https://img.shields.io/badge/build-in%20development-orange)
