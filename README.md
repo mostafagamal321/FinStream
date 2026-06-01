@@ -88,10 +88,21 @@ Current completed work:
 - Added support for simulating historical CSV data as streaming events.
 ---
 
-## Running The project So far: 
+## 1.Market & news pipline setup: 
 #### Start the core services:
 ```bash
 docker compose up -d kafka schema-registry
+docker compose up -d flink-jobmanager flink-taskmanager
+```
+#### submit Flink jobs:
+```bash
+docker exec -it finstream-flink-jobmanager flink run `
+  -c com.finstream.flink.MarketBronzeAndSignalsJob `
+  /opt/flink/jobs/flink-jobs.jar
+
+docker exec -it finstream-flink-jobmanager flink run `
+  -c com.finstream.flink.NewsBronzeAndSignalsJob `
+  /opt/flink/jobs/flink-jobs.jar
 ```
 #### Running Producers:
 ```bash
@@ -107,6 +118,7 @@ docker compose logs -f finnhub-stream-producer
 docker compose logs -f historical-news-producer
 docker compose logs -f news-producer
 ```
+
 ## Service URLs:
 | Service           | URL                     |
 | ----------------- | ----------------------- |
