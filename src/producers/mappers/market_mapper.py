@@ -105,10 +105,10 @@ def map_finnhub_trade_to_market_event(trade: dict) -> dict:
         "price": float(price),
 
 
-        "open_price": None,
-        "high_price": None,
-        "low_price": None,
-        "close_price": None,
+        "open_price": price,
+        "high_price": price,
+        "low_price": price,
+        "close_price": price,
 
         "volume": float(trade.get("v", 0)),
         "source": "finnhub_websocket",

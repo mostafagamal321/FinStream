@@ -11,13 +11,18 @@
   <properties>
     <java.version>17</java.version>
     <flink.version>1.19.1</flink.version>
-    <scala.binary.version>2.12</scala.binary.version>
+    <kafka.connector.version>3.2.0-1.19</kafka.connector.version>
+    <hadoop.version>3.3.6</hadoop.version>
+    <avro.version>1.11.3</avro.version>
+
     <maven.compiler.source>17</maven.compiler.source>
     <maven.compiler.target>17</maven.compiler.target>
+
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
 
   <dependencies>
-    <!-- Flink core -->
+    <!-- Flink runtime/core dependencies are provided by the Flink Docker image -->
     <dependency>
       <groupId>org.apache.flink</groupId>
       <artifactId>flink-streaming-java</artifactId>
@@ -39,14 +44,25 @@
       <scope>provided</scope>
     </dependency>
 
-    <!-- Kafka SQL connector -->
+    <!-- Kafka DataStream connector: required for
+    org.apache.flink.connector.kafka.source.KafkaSource -->
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-connector-kafka</artifactId>
+      <version>${kafka.connector.version}</version>
+    </dependency>
+
+    <!-- Keep this only if your jobs use Flink SQL Kafka tables.
+         It is not enough for KafkaSource, but useful for CREATE TABLE ... WITH ('connector'='kafka'). -->
+    <!--
     <dependency>
       <groupId>org.apache.flink</groupId>
       <artifactId>flink-sql-connector-kafka</artifactId>
-      <version>3.2.0-1.19</version>
+      <version>${kafka.connector.version}</version>
     </dependency>
+    -->
 
-    <!-- Avro Confluent format -->
+    <!-- Avro + Confluent Schema Registry format -->
     <dependency>
       <groupId>org.apache.flink</groupId>
       <artifactId>flink-avro-confluent-registry</artifactId>
@@ -60,7 +76,8 @@
       <version>${flink.version}</version>
     </dependency>
 
-    <!-- Hadoop filesystem support for S3A -->
+    <!-- Flink S3 filesystem plugin is usually placed in /opt/flink/plugins or /opt/flink/lib.
+         Keep as provided because the Flink image/plugin should supply it at runtime. -->
     <dependency>
       <groupId>org.apache.flink</groupId>
       <artifactId>flink-s3-fs-hadoop</artifactId>
@@ -68,49 +85,75 @@
       <scope>provided</scope>
     </dependency>
 
-
+    <!-- Hadoop dependencies for Parquet/S3A integration -->
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-common</artifactId>
-      <version>3.3.6</version>
+      <version>${hadoop.version}</version>
     </dependency>
 
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-mapreduce-client-core</artifactId>
-      <version>3.3.6</version>
+      <version>${hadoop.version}</version>
     </dependency>
 
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-aws</artifactId>
-      <version>3.3.6</version>
+      <version>${hadoop.version}</version>
     </dependency>
 
+    <!-- Avro Java library -->
     <dependency>
       <groupId>org.apache.avro</groupId>
       <artifactId>avro</artifactId>
-      <version>1.11.3</version>
+      <version>${avro.version}</version>
     </dependency>
-
   </dependencies>
-
 
   <build>
     <plugins>
-      <!-- Build a fat JAR for Flink submission -->
+      <!-- Compile Java 17 code -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.12.1</version>
+        <configuration>
+          <source>${maven.compiler.source}</source>
+          <target>${maven.compiler.target}</target>
+          <release>17</release>
+        </configuration>
+      </plugin>
+
+      <!-- Build a fat JAR for Flink submission.
+           This includes Kafka connector and other non-provided dependencies. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
         <version>3.5.1</version>
         <executions>
           <execution>
+            <id>shade-flink-job</id>
             <phase>package</phase>
             <goals>
               <goal>shade</goal>
             </goals>
+
             <configuration>
               <createDependencyReducedPom>false</createDependencyReducedPom>
+
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+
               <transformers>
                 <transformer
                   implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />

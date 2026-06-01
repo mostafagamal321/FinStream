@@ -226,6 +226,9 @@ services:
   environment:
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+  volumes:
+   - ./producer_state:/app/state
   depends_on:
    kafka:
     condition: service_healthy
@@ -245,6 +248,8 @@ services:
   environment:
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
+  volumes:
+   - ./producer_state:/app/state
   depends_on:
    kafka:
     condition: service_healthy
