@@ -4,7 +4,7 @@
 ![Build](https://img.shields.io/badge/build-in%20development-orange)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
-![Kafka](https://img.shields.io/badge/kafka-streaming-brightred)
+![Kafka](https://img.shields.io/badge/kafka-streaming-red)
 ![Static Badge](https://img.shields.io/badge/Spark-Batch%20Processing-Brightgreen)
 ![Flink](https://img.shields.io/badge/flink-real--time-orange)
 ![ClickHouse](https://img.shields.io/badge/clickhouse-analytics-yellow)
