@@ -58,8 +58,7 @@ Sources
        1. Amazon S3 Bronze raw audit events
        2. ClickHouse real-time scores and signals
        3. Kafka alert topics
-  -> Amazon S3  Lakehouse: Bronze -> Silver 
-  -> Spark/dbt/Great Expectations Batch Processing
+  -> Amazon S3  Lakehouse: Bronze -> Silver -> Spark/dbt/Great Expectations Batch Processing -> ClickHouse -> SuperSet
   -> MLflow Model Training + Registry
   -> Redis Feature Store Updates
   -> Superset/Grafana Dashboards and Alerts
