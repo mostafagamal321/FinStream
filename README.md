@@ -1,4 +1,4 @@
-# FinStream — Real-Time Financial Intelligence Platform
+<img width="233" height="53" alt="image" src="https://github.com/user-attachments/assets/9180cfc1-1f66-4a18-9b85-3a312649bcdc" /><img width="307" height="53" alt="image" src="https://github.com/user-attachments/assets/69824042-2a87-43b4-b099-d570ae62a7a4" /># FinStream — Real-Time Financial Intelligence Platform
 
 ![Project Status](https://img.shields.io/badge/status-in%20progress-yellow)
 ![Build](https://img.shields.io/badge/build-in%20development-orange)
@@ -17,7 +17,24 @@ FinStream is a real-time financial intelligence platform that simulates how a mo
 
 ## Business Case
 
-Financial institutions need to react to financial events as they happen, not after daily batch processing. FinStream uses transaction events to detect **suspicious payment behavior**, historical and real-time transaction patterns to update **risk indicators**, and **stock/news streams** to detect market anomalies and sentiment-driven market signals.
+Financial institutions need to react to financial events as they happen, not after daily batch processing. FinStream uses transaction events to detect **suspicious payment behavior**, historical and real-time transaction patterns to update **risk indicators**, and **stock/news streams** to detect market anomalies and sentiment-driven market signals By.
+
+## Problem We trying to solve: 
+- Delayed fraud detection , In many systems fraud is detected after the transaction has already happened. 
+- Outdated risk scores , Traditional risk scores are often updated daily or weekly. That means the customer risk profile can be stale.
+- Slow market awareness , Financial exposure can change quickly because of price movement, volume spikes, or negative news.
+
+
+---
+## Data Sources:
+| Data source                    | Source URL                                                                  | 
+| ------------------------------ | ----------------------------------------------------------------------------| 
+| **IEEE-CIS Fraud Transcation** | https://www.kaggle.com/competitions/ieee-fraud-detection/data               |
+| **Historical market data**     | [https://finnhub.io/docs/api](https://finnhub.io/dashboard)                 |
+| **Live market ticks**          | [Real-time market movement and signals](https://finnhub.io/dashboard)       |                        
+| **Historical financial news**  | [Batch news ingestion, sentiment/history analysis](https://newsapi.org/)    |             
+| **Live/recent financial news** | [Real-time market intelligence and exposure alerts](https://newsapi.org/)   |            
+
 
 ## Data Domains
 
