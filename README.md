@@ -17,7 +17,7 @@ FinStream is a real-time financial intelligence platform that simulates how a mo
 
 ## Business Case
 
-Financial institutions need to react to financial events as they happen, not after daily batch processing. FinStream uses transaction events to detect **suspicious payment behavior**, historical and real-time transaction patterns to update **risk **indicators, and **stock/news streams** to detect market anomalies and sentiment-driven market signals.
+Financial institutions need to react to financial events as they happen, not after daily batch processing. FinStream uses transaction events to detect **suspicious payment behavior**, historical and real-time transaction patterns to update **risk indicators**, and **stock/news streams** to detect market anomalies and sentiment-driven market signals.
 
 ## Data Domains
 
