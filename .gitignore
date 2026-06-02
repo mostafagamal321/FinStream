@@ -102,3 +102,6 @@ Thumbs.db
 
 # Flink runtime checkpoints
 flink/checkpoints/
+
+flink/checkpoints/*
+!flink/checkpoints/.gitkeep
