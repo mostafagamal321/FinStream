@@ -7,7 +7,6 @@ x-aws-env: &aws-env
  AWS_REGION: ${AWS_REGION:-us-east-1}
  FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET:-finstream-local-bronze}
  FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET:-finstream-local-silver}
- FINSTREAM_GOLD_BUCKET: ${FINSTREAM_GOLD_BUCKET:-finstream-local-gold}
  FINSTREAM_CHECKPOINT_BUCKET: ${FINSTREAM_CHECKPOINT_BUCKET:-finstream-local-checkpoints}
  MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET:-finstream-local-mlflow}
 
@@ -166,6 +165,8 @@ services:
   networks:
    - finstream
  market-producer:
+  profiles:
+   - producers
   build:
    context: .
    dockerfile: Dockerfile.producers
@@ -183,6 +184,8 @@ services:
    - finstream
 
  news-producer:
+  profiles:
+   - producers
   build:
    context: .
    dockerfile: Dockerfile.producers
@@ -200,6 +203,8 @@ services:
    - finstream
 
  finnhub-stream-producer:
+  profiles:
+   - producers
   build:
    context: .
    dockerfile: Dockerfile.producers
@@ -217,6 +222,8 @@ services:
    - finstream
 
  historical-market-producer:
+  profiles:
+   - producers
   build:
    context: .
    dockerfile: Dockerfile.producers
@@ -236,6 +243,8 @@ services:
    - finstream
 
  historical-news-producer:
+  profiles:
+   - producers
   build:
    context: .
    dockerfile: Dockerfile.producers
@@ -260,36 +269,51 @@ services:
   profiles:
    - streaming
   command: jobmanager
+  dns:
+   - 8.8.8.8
+   - 1.1.1.1
   ports:
    - "8082:8081"
    - "9249:9249"
   environment:
    <<: *aws-env
    ENABLE_BUILT_IN_PLUGINS: flink-s3-fs-hadoop-1.19.1.jar
+
    REDIS_HOST: redis
    REDIS_PORT: 6379
+
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
-   CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/finstream
+
+   CLICKHOUSE_JDBC_URL: ${CLICKHOUSE_JDBC_URL:-jdbc:clickhouse://clickhouse:8123/finstream}
    CLICKHOUSE_USER: ${CLICKHOUSE_USER:-finstream}
    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-finstream}
+
    ENABLE_FLINK_CHECKPOINTS: ${ENABLE_FLINK_CHECKPOINTS:-true}
-   FLINK_CHECKPOINT_DIR: s3://${FINSTREAM_CHECKPOINT_BUCKET}/flink-checkpoints/transactions
-   S3_TRANSACTIONS_SCORED_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze/transactions_scored_flink/
+   FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
+   FLINK_TRANSACTION_CONSUMER_GROUP: ${FLINK_TRANSACTION_CONSUMER_GROUP:-finstream-transactions-stream-v1}
+   FLINK_STARTING_OFFSETS: ${FLINK_STARTING_OFFSETS:-latest}
+   FLINK_DEDUP_TTL_DAYS: ${FLINK_DEDUP_TTL_DAYS:-7}
+
+   S3_TRANSACTIONS_SCORED_PATH: ${S3_TRANSACTIONS_SCORED_PATH:-s3://finstream-bronze-mostafa-dev/bronze/transactions_scored_flink/}
+
+   ENABLE_FRAUD_ALERTS_SINK: ${ENABLE_FRAUD_ALERTS_SINK:-true}
+   TOPIC_FRAUD_ALERTS: ${TOPIC_FRAUD_ALERTS:-fraud_alerts}
+
    FLINK_PROPERTIES: |
     jobmanager.rpc.address: flink-jobmanager
     jobmanager.memory.process.size: 768m
     parallelism.default: 1
     state.backend: rocksdb
     metrics.reporters: prom
-    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
+    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
     metrics.reporter.prom.port: 9249
-    s3.access-key: ${AWS_ACCESS_KEY_ID:-dummy}
-    s3.secret-key: ${AWS_SECRET_ACCESS_KEY:-dummy}
+    s3.access-key: ${AWS_ACCESS_KEY_ID}
+    s3.secret-key: ${AWS_SECRET_ACCESS_KEY}
     s3.region: ${AWS_REGION:-us-east-1}
   volumes:
-   - ./flink/jobs:/opt/flink/usrlib
-   - flink-checkpoints:/tmp/flink/checkpoints
+   - ./flink-jobs/target:/opt/flink/usrlib
+   - ./flink/checkpoints:/tmp/flink/checkpoints
   depends_on:
    kafka:
     condition: service_healthy
@@ -307,21 +331,36 @@ services:
   profiles:
    - streaming
   command: taskmanager
+  dns:
+   - 8.8.8.8
+   - 1.1.1.1
   ports:
    - "9250:9249"
   environment:
    <<: *aws-env
    ENABLE_BUILT_IN_PLUGINS: flink-s3-fs-hadoop-1.19.1.jar
-   ENABLE_FLINK_CHECKPOINTS: ${ENABLE_FLINK_CHECKPOINTS:-true}
-   FLINK_CHECKPOINT_DIR: s3://${FINSTREAM_CHECKPOINT_BUCKET}/flink-checkpoints/transactions
-   S3_TRANSACTIONS_SCORED_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze/transactions_scored_flink/
+
    REDIS_HOST: redis
    REDIS_PORT: 6379
+
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
-   CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/finstream
+
+   CLICKHOUSE_JDBC_URL: ${CLICKHOUSE_JDBC_URL:-jdbc:clickhouse://clickhouse:8123/finstream}
    CLICKHOUSE_USER: ${CLICKHOUSE_USER:-finstream}
    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-finstream}
+
+   ENABLE_FLINK_CHECKPOINTS: ${ENABLE_FLINK_CHECKPOINTS:-true}
+   FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
+   FLINK_TRANSACTION_CONSUMER_GROUP: ${FLINK_TRANSACTION_CONSUMER_GROUP:-finstream-transactions-stream-v1}
+   FLINK_STARTING_OFFSETS: ${FLINK_STARTING_OFFSETS:-latest}
+   FLINK_DEDUP_TTL_DAYS: ${FLINK_DEDUP_TTL_DAYS:-7}
+
+   S3_TRANSACTIONS_SCORED_PATH: ${S3_TRANSACTIONS_SCORED_PATH:-s3://finstream-bronze-mostafa-dev/bronze/transactions_scored_flink/}
+
+   ENABLE_FRAUD_ALERTS_SINK: ${ENABLE_FRAUD_ALERTS_SINK:-true}
+   TOPIC_FRAUD_ALERTS: ${TOPIC_FRAUD_ALERTS:-fraud_alerts}
+
    FLINK_PROPERTIES: |
     jobmanager.rpc.address: flink-jobmanager
     taskmanager.numberOfTaskSlots: 1
@@ -330,14 +369,14 @@ services:
     state.backend: rocksdb
     state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
     metrics.reporters: prom
-    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
+    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
     metrics.reporter.prom.port: 9249
-    s3.access-key: ${AWS_ACCESS_KEY_ID:-dummy}
-    s3.secret-key: ${AWS_SECRET_ACCESS_KEY:-dummy}
+    s3.access-key: ${AWS_ACCESS_KEY_ID}
+    s3.secret-key: ${AWS_SECRET_ACCESS_KEY}
     s3.region: ${AWS_REGION:-us-east-1}
   volumes:
-   - ./flink/jobs:/opt/flink/usrlib
-   - flink-checkpoints:/tmp/flink/checkpoints
+   - ./flink-jobs/target:/opt/flink/usrlib
+   - ./flink/checkpoints:/tmp/flink/checkpoints
   depends_on:
    flink-jobmanager:
     condition: service_started
@@ -631,6 +670,9 @@ services:
   container_name: finstream-s3-init
   profiles:
    - setup
+  dns:
+   - 8.8.8.8
+   - 1.1.1.1
   environment:
    <<: *aws-env
   entrypoint: ["/bin/sh", "-c"]
@@ -638,11 +680,10 @@ services:
    set -e
 
    for bucket in \
-     "$$FINSTREAM_BRONZE_BUCKET" \
-     "$$FINSTREAM_SILVER_BUCKET" \
-     "$$FINSTREAM_GOLD_BUCKET" \
-     "$$FINSTREAM_CHECKPOINT_BUCKET" \
-     "$$MLFLOW_ARTIFACT_BUCKET"
+    "$$FINSTREAM_BRONZE_BUCKET" \
+    "$$FINSTREAM_SILVER_BUCKET" \
+    "$$FINSTREAM_CHECKPOINT_BUCKET" \
+    "$$MLFLOW_ARTIFACT_BUCKET"
    do
      echo "Creating bucket: $$bucket"
 

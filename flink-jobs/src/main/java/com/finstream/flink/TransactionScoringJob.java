@@ -17,14 +17,23 @@ import org.apache.flink.util.Collector;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.connector.base.DeliveryGuarantee;
+import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
+import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.api.common.serialization.SimpleStringEncoder;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.connector.file.sink.FileSink;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.DateTimeBucketAssigner;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
+import org.apache.flink.api.common.state.StateTtlConfig;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.time.Time;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 
 import java.io.Serializable;
 import java.sql.PreparedStatement;
@@ -57,9 +66,7 @@ public class TransactionScoringJob {
                 .setBootstrapServers(kafkaBootstrapServers)
                 .setTopics(inputTopic)
                 .setGroupId(consumerGroup)
-                .setStartingOffsets(
-                        org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer.earliest()
-                )
+                .setStartingOffsets(getStartingOffsetsInitializer())
                 .setDeserializer(new TransactionAvroDeserializationSchema(schemaRegistryUrl))
                 .build();
 
@@ -69,7 +76,14 @@ public class TransactionScoringJob {
                 "transactions_raw_source"
         );
 
-        DataStream<ScoredTransaction> scoredTransactions = transactions
+        int dedupTtlDays = Integer.parseInt(getEnv("FLINK_DEDUP_TTL_DAYS", "7"));
+
+        DataStream<TransactionEvent> uniqueTransactions = transactions
+                .keyBy(event -> event.transactionId)
+                .process(new TransactionDeduplicationFunction(dedupTtlDays))
+                .name("deduplicate_by_transaction_id");
+
+        DataStream<ScoredTransaction> scoredTransactions = uniqueTransactions
                 .map(new BaselineScoringFunction())
                 .name("baseline_rule_scoring");
 
@@ -94,6 +108,25 @@ public class TransactionScoringJob {
         } else {
             System.out.println("S3 scored transactions sink disabled. S3_TRANSACTIONS_SCORED_PATH is empty.");
         }
+        boolean enableFraudAlertsSink = Boolean.parseBoolean(
+        getEnv("ENABLE_FRAUD_ALERTS_SINK", "true")
+);
+
+String fraudAlertsTopic = getEnv("TOPIC_FRAUD_ALERTS", "fraud_alerts");
+
+if (enableFraudAlertsSink) {
+    scoredTransactions
+            .filter(TransactionScoringJob::isFraudAlert)
+            .name("filter_high_risk_fraud_alerts")
+            .map(new FraudAlertJsonMapper())
+            .name("fraud_alert_to_json")
+            .sinkTo(createFraudAlertsSink(kafkaBootstrapServers, fraudAlertsTopic))
+            .name("kafka_fraud_alerts_sink");
+
+    System.out.println("Kafka fraud alerts sink enabled. topic=" + fraudAlertsTopic);
+} else {
+    System.out.println("Kafka fraud alerts sink disabled. ENABLE_FRAUD_ALERTS_SINK=false.");
+}
 
         env.execute("FinStream Transaction Baseline Scoring Job");
     }
@@ -126,6 +159,18 @@ public class TransactionScoringJob {
             return defaultValue;
         }
         return value;
+    }
+
+    private static OffsetsInitializer getStartingOffsetsInitializer() {
+        String startingOffsets = getEnv("FLINK_STARTING_OFFSETS", "latest");
+
+        if ("earliest".equalsIgnoreCase(startingOffsets)) {
+            System.out.println("Flink starting offsets: earliest");
+            return OffsetsInitializer.earliest();
+        }
+
+        System.out.println("Flink starting offsets: latest");
+        return OffsetsInitializer.latest();
     }
 
     private static SinkFunction<ScoredTransaction> createClickHouseSink() {
@@ -247,17 +292,229 @@ public class TransactionScoringJob {
     public static class ScoredTransactionJsonMapper
             implements MapFunction<ScoredTransaction, String> {
 
-        private transient ObjectMapper objectMapper;
-
         @Override
-        public String map(ScoredTransaction scored) throws Exception {
-            if (objectMapper == null) {
-                objectMapper = new ObjectMapper();
+        public String map(ScoredTransaction scored) {
+            return "{"
+                    + "\"transaction_id\":\"" + escapeJson(scored.transactionId) + "\","
+                    + "\"customer_id\":\"" + escapeJson(scored.customerId) + "\","
+                    + "\"card_id\":\"" + escapeJson(scored.cardId) + "\","
+                    + "\"merchant_id\":\"" + escapeJson(scored.merchantId) + "\","
+                    + "\"event_time\":\"" + escapeJson(scored.eventTime) + "\","
+                    + "\"scored_at\":\"" + escapeJson(scored.scoredAt) + "\","
+                    + "\"amount\":" + scored.amount + ","
+                    + "\"currency\":\"" + escapeJson(scored.currency) + "\","
+                    + "\"product_cd\":\"" + escapeJson(scored.productCd) + "\","
+                    + "\"rule_score\":" + scored.ruleScore + ","
+                    + "\"ml_score\":" + nullableDouble(scored.mlScore) + ","
+                    + "\"fraud_score\":" + scored.fraudScore + ","
+                    + "\"scoring_method\":\"" + escapeJson(scored.scoringMethod) + "\","
+                    + "\"risk_level\":\"" + escapeJson(scored.riskLevel) + "\","
+                    + "\"decision\":\"" + escapeJson(scored.decision) + "\","
+                    + "\"reason_codes\":\"" + escapeJson(String.join(",", scored.reasonCodes)) + "\","
+                    + "\"actual_is_fraud\":" + nullableInteger(scored.actualIsFraud) + ","
+                    + "\"kafka_topic\":\"" + escapeJson(scored.kafkaTopic) + "\","
+                    + "\"kafka_partition\":" + scored.kafkaPartition + ","
+                    + "\"kafka_offset\":" + scored.kafkaOffset
+                    + "}";
+        }
+
+        private static String nullableDouble(Double value) {
+            return value == null ? "null" : value.toString();
+        }
+
+        private static String nullableInteger(Integer value) {
+            return value == null ? "null" : value.toString();
+        }
+
+        private static String escapeJson(String value) {
+            if (value == null) {
+                return "";
             }
 
-            return objectMapper.writeValueAsString(scored);
+            StringBuilder escaped = new StringBuilder();
+
+            for (int i = 0; i < value.length(); i++) {
+                char c = value.charAt(i);
+
+                switch (c) {
+                    case '"':
+                        escaped.append("\\\"");
+                        break;
+                    case '\\':
+                        escaped.append("\\\\");
+                        break;
+                    case '\b':
+                        escaped.append("\\b");
+                        break;
+                    case '\f':
+                        escaped.append("\\f");
+                        break;
+                    case '\n':
+                        escaped.append("\\n");
+                        break;
+                    case '\r':
+                        escaped.append("\\r");
+                        break;
+                    case '\t':
+                        escaped.append("\\t");
+                        break;
+                    default:
+                        if (c < 0x20) {
+                            escaped.append(String.format("\\u%04x", (int) c));
+                        } else {
+                            escaped.append(c);
+                        }
+                }
+            }
+
+            return escaped.toString();
         }
     }
+
+    public static class TransactionDeduplicationFunction
+            extends KeyedProcessFunction<String, TransactionEvent, TransactionEvent> {
+
+        private final int ttlDays;
+        private transient ValueState<Boolean> seenState;
+
+        public TransactionDeduplicationFunction(int ttlDays) {
+            this.ttlDays = ttlDays;
+        }
+
+        @Override
+        public void open(Configuration parameters) {
+            StateTtlConfig ttlConfig = StateTtlConfig
+                    .newBuilder(Time.days(ttlDays))
+                    .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
+                    .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
+                    .cleanupFullSnapshot()
+                    .build();
+
+            ValueStateDescriptor<Boolean> descriptor =
+                    new ValueStateDescriptor<>("seen_transaction_id", Boolean.class);
+
+            descriptor.enableTimeToLive(ttlConfig);
+
+            seenState = getRuntimeContext().getState(descriptor);
+
+            System.out.println("Transaction deduplication enabled. ttlDays=" + ttlDays);
+        }
+
+        @Override
+        public void processElement(
+                TransactionEvent event,
+                Context context,
+                Collector<TransactionEvent> out
+        ) throws Exception {
+            if (event.transactionId == null || event.transactionId.isBlank()) {
+                return;
+            }
+
+            Boolean alreadySeen = seenState.value();
+
+            if (alreadySeen == null || !alreadySeen) {
+                seenState.update(true);
+                out.collect(event);
+            }
+        }
+    }
+
+private static boolean isFraudAlert(ScoredTransaction scored) {
+    return "HIGH".equalsIgnoreCase(scored.riskLevel)
+            || "BLOCK".equalsIgnoreCase(scored.decision);
+}
+
+private static KafkaSink<String> createFraudAlertsSink(
+        String kafkaBootstrapServers,
+        String fraudAlertsTopic
+) {
+    return KafkaSink.<String>builder()
+            .setBootstrapServers(kafkaBootstrapServers)
+            .setRecordSerializer(
+                    KafkaRecordSerializationSchema.builder()
+                            .setTopic(fraudAlertsTopic)
+                            .setValueSerializationSchema(new SimpleStringSchema())
+                            .build()
+            )
+            .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+            .build();
+}
+
+public static class FraudAlertJsonMapper
+        implements MapFunction<ScoredTransaction, String> {
+
+    @Override
+    public String map(ScoredTransaction scored) {
+        return "{"
+                + "\"alert_type\":\"FRAUD_RISK_ALERT\","
+                + "\"transaction_id\":\"" + escapeJson(scored.transactionId) + "\","
+                + "\"customer_id\":\"" + escapeJson(scored.customerId) + "\","
+                + "\"card_id\":\"" + escapeJson(scored.cardId) + "\","
+                + "\"merchant_id\":\"" + escapeJson(scored.merchantId) + "\","
+                + "\"event_time\":\"" + escapeJson(scored.eventTime) + "\","
+                + "\"scored_at\":\"" + escapeJson(scored.scoredAt) + "\","
+                + "\"amount\":" + scored.amount + ","
+                + "\"currency\":\"" + escapeJson(scored.currency) + "\","
+                + "\"fraud_score\":" + scored.fraudScore + ","
+                + "\"risk_level\":\"" + escapeJson(scored.riskLevel) + "\","
+                + "\"decision\":\"" + escapeJson(scored.decision) + "\","
+                + "\"reason_codes\":\"" + escapeJson(String.join(",", scored.reasonCodes)) + "\","
+                + "\"scoring_method\":\"" + escapeJson(scored.scoringMethod) + "\","
+                + "\"actual_is_fraud\":" + nullableInteger(scored.actualIsFraud) + ","
+                + "\"source_topic\":\"" + escapeJson(scored.kafkaTopic) + "\","
+                + "\"source_partition\":" + scored.kafkaPartition + ","
+                + "\"source_offset\":" + scored.kafkaOffset
+                + "}";
+    }
+
+    private static String nullableInteger(Integer value) {
+        return value == null ? "null" : value.toString();
+    }
+
+    private static String escapeJson(String value) {
+        if (value == null) {
+            return "";
+        }
+
+        StringBuilder escaped = new StringBuilder();
+
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+
+            switch (c) {
+                case '"':
+                    escaped.append("\\\"");
+                    break;
+                case '\\':
+                    escaped.append("\\\\");
+                    break;
+                case '\b':
+                    escaped.append("\\b");
+                    break;
+                case '\f':
+                    escaped.append("\\f");
+                    break;
+                case '\n':
+                    escaped.append("\\n");
+                    break;
+                case '\r':
+                    escaped.append("\\r");
+                    break;
+                case '\t':
+                    escaped.append("\\t");
+                    break;
+                default:
+                    if (c < 0x20) {
+                        escaped.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        escaped.append(c);
+                    }
+            }
+        }
+
+        return escaped.toString();
+    }
+}
 
     public static class TransactionAvroDeserializationSchema
             implements KafkaRecordDeserializationSchema<TransactionEvent> {
