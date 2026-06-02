@@ -1,16 +1,18 @@
 {
-  "type": "record",
-  "name": "StockTickEvent",
-  "namespace": "finstream.market",
-  "fields": [
-    {"name": "ticker", "type": "string"},
-    {"name": "volume", "type": "double"},
-    {"name": "vwap", "type": ["null", "double"], "default": null},
-    {"name": "open", "type": "double"},
-    {"name": "close", "type": "double"},
-    {"name": "high", "type": "double"},
-    {"name": "low", "type": "double"},
-    {"name": "event_time_ms", "type": "long"},
-    {"name": "trade_count", "type": ["null", "long"], "default": null}
-  ]
+ "type": "record",
+ "name": "StockTickEvent",
+ "namespace": "finstream.market",
+ "fields": [
+  { "name": "event_id", "type": "string" },
+  { "name": "event_time", "type": "long" },
+  { "name": "symbol", "type": "string" },
+  { "name": "price", "type": "double" },
+  { "name": "open_price", "type": ["null", "double"], "default": null },
+  { "name": "high_price", "type": ["null", "double"], "default": null },
+  { "name": "low_price", "type": ["null", "double"], "default": null },
+  { "name": "close_price", "type": ["null", "double"], "default": null },
+  { "name": "volume", "type": ["null", "double"], "default": null },
+  { "name": "source", "type": "string" },
+  { "name": "raw_payload", "type": "string" }
+ ]
 }

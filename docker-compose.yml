@@ -1,581 +1,665 @@
 name: finstream
 
 x-aws-env: &aws-env
-  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-dummy}
-  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-dummy}
-  AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
-  AWS_REGION: ${AWS_REGION:-us-east-1}
-  FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET:-finstream-local-bronze}
-  FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET:-finstream-local-silver}
-  FINSTREAM_GOLD_BUCKET: ${FINSTREAM_GOLD_BUCKET:-finstream-local-gold}
-  FINSTREAM_CHECKPOINT_BUCKET: ${FINSTREAM_CHECKPOINT_BUCKET:-finstream-local-checkpoints}
-  MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET:-finstream-local-mlflow}
+ AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-dummy}
+ AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-dummy}
+ AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+ AWS_REGION: ${AWS_REGION:-us-east-1}
+ FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET:-finstream-local-bronze}
+ FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET:-finstream-local-silver}
+ FINSTREAM_GOLD_BUCKET: ${FINSTREAM_GOLD_BUCKET:-finstream-local-gold}
+ FINSTREAM_CHECKPOINT_BUCKET: ${FINSTREAM_CHECKPOINT_BUCKET:-finstream-local-checkpoints}
+ MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET:-finstream-local-mlflow}
 
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.9.3-python3.11
-  env_file: .env
-  environment:
-    AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-finstream}:${POSTGRES_PASSWORD:-finstream}@postgres:5432/${POSTGRES_DB:-airflow}
-    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
-    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
-    <<: *aws-env
-  volumes:
-    - ./airflow/dags:/opt/airflow/dags
-    - ./airflow/logs:/opt/airflow/logs
-    - ./airflow/plugins:/opt/airflow/plugins
-    - ./spark/jobs:/opt/airflow/spark/jobs
-    - ./dbt:/opt/airflow/dbt
-  user: "${AIRFLOW_UID:-50000}:0"
-  depends_on:
-    postgres:
-      condition: service_healthy
-  networks:
-    - finstream
+ image: apache/airflow:2.9.3-python3.11
+ env_file: .env
+ environment:
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-finstream}:${POSTGRES_PASSWORD:-finstream}@postgres:5432/${POSTGRES_DB:-airflow}
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  <<: *aws-env
+ volumes:
+  - ./airflow/dags:/opt/airflow/dags
+  - ./airflow/logs:/opt/airflow/logs
+  - ./airflow/plugins:/opt/airflow/plugins
+  - ./spark/jobs:/opt/airflow/spark/jobs
+  - ./dbt:/opt/airflow/dbt
+ user: "${AIRFLOW_UID:-50000}:0"
+ depends_on:
+  postgres:
+   condition: service_healthy
+ networks:
+  - finstream
 
 services:
-  kafka:
-    image: confluentinc/cp-kafka:7.6.1
-    container_name: finstream-kafka
-    hostname: kafka
-    ports:
-      - "29092:29092"
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+ kafka:
+  image: confluentinc/cp-kafka:7.6.1
+  container_name: finstream-kafka
+  hostname: kafka
+  ports:
+   - "29092:29092"
+  environment:
+   KAFKA_NODE_ID: 1
+   KAFKA_PROCESS_ROLES: broker,controller
+   KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+   KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
 
-      KAFKA_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://kafka:9093
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+   KAFKA_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://kafka:9093
+   KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+   KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+   KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
 
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
-      KAFKA_MIN_INSYNC_REPLICAS: 1
+   KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+   KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+   KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+   KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+   KAFKA_MIN_INSYNC_REPLICAS: 1
 
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-      KAFKA_NUM_PARTITIONS: 3
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_LOG_RETENTION_HOURS: 24
-      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+   KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+   KAFKA_NUM_PARTITIONS: 3
+   KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+   KAFKA_LOG_RETENTION_HOURS: 24
+   KAFKA_LOG_SEGMENT_BYTES: 1073741824
 
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-    volumes:
-      - kafka-data:/var/lib/kafka/data
-    healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server kafka:9092 >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 10s
-      retries: 15
-      start_period: 30s
-    mem_limit: 1g
-    cpus: 1.0
-    networks:
-      - finstream
+   CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  volumes:
+   - kafka-data:/var/lib/kafka/data
+  healthcheck:
+   test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server kafka:9092 >/dev/null 2>&1"]
+   interval: 10s
+   timeout: 10s
+   retries: 15
+   start_period: 30s
+  mem_limit: 1g
+  cpus: 1.0
+  networks:
+   - finstream
 
-  schema-registry:
-    image: confluentinc/cp-schema-registry:7.6.1
-    container_name: finstream-schema-registry
-    hostname: schema-registry
-    depends_on:
-      kafka:
-        condition: service_healthy
-    ports:
-      - "8081:8081"
-    environment:
-      SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/subjects >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
-    mem_limit: 512m
-    cpus: 0.5
-    networks:
-      - finstream
+ schema-registry:
+  image: confluentinc/cp-schema-registry:7.6.1
+  container_name: finstream-schema-registry
+  hostname: schema-registry
+  depends_on:
+   kafka:
+    condition: service_healthy
+  ports:
+   - "8081:8081"
+  environment:
+   SCHEMA_REGISTRY_HOST_NAME: schema-registry
+   SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+   SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+  healthcheck:
+   test: ["CMD-SHELL", "curl -fsS http://localhost:8081/subjects >/dev/null"]
+   interval: 10s
+   timeout: 5s
+   retries: 12
+   start_period: 20s
+  mem_limit: 512m
+  cpus: 0.5
+  networks:
+   - finstream
 
-  kafka-init:
-    image: confluentinc/cp-kafka:7.6.1
-    container_name: finstream-kafka-init
-    depends_on:
-      kafka:
-        condition: service_healthy
-    command: >
-      bash -c '
-        echo "Creating FinStream Kafka topics...";
+ kafka-init:
+  image: confluentinc/cp-kafka:7.6.1
+  container_name: finstream-kafka-init
+  depends_on:
+   kafka:
+    condition: service_healthy
+  command: >
+   bash -c '
+     echo "Creating FinStream Kafka topics...";
 
-        for topic in transactions_raw market_ticks_raw news_raw fx_rates_raw fraud_alerts dead_letter_queue raw_audit_events; do
-          kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
-            --topic $$topic \
-            --partitions 3 \
-            --replication-factor 1;
-        done;
+     for topic in transactions_raw market_ticks_raw news_raw fx_rates_raw fraud_alerts dead_letter_queue raw_audit_events; do
+       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+         --topic $$topic \
+         --partitions 3 \
+         --replication-factor 1;
+     done;
 
-        echo "Kafka topics created:";
-        kafka-topics --bootstrap-server kafka:9092 --list;
-      '
-    restart: "no"
-    networks:
-      - finstream
+     echo "Kafka topics created:";
+     kafka-topics --bootstrap-server kafka:9092 --list;
+   '
+  restart: "no"
+  networks:
+   - finstream
 
-  kafka-ui:
-    image: provectuslabs/kafka-ui:v0.7.2
-    container_name: finstream-kafka-ui
-    profiles:
-      - kafka-ui
-    depends_on:
-      kafka:
-        condition: service_healthy
-      schema-registry:
-        condition: service_healthy
-    ports:
-      - "8085:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: finstream-local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
-    mem_limit: 512m
-    networks:
-      - finstream
+ kafka-ui:
+  image: provectuslabs/kafka-ui:v0.7.2
+  container_name: finstream-kafka-ui
+  profiles:
+   - kafka-ui
+  depends_on:
+   kafka:
+    condition: service_healthy
+   schema-registry:
+    condition: service_healthy
+  ports:
+   - "8085:8080"
+  environment:
+   KAFKA_CLUSTERS_0_NAME: finstream-local
+   KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+   KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+  mem_limit: 512m
+  networks:
+   - finstream
 
-  redis:
-    image: redis:7.2-alpine
-    container_name: finstream-redis
-    profiles:
-      - streaming
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    mem_limit: 256m
-    networks:
-      - finstream
+ redis:
+  image: redis:7.2-alpine
+  container_name: finstream-redis
+  profiles:
+   - streaming
+  command: ["redis-server", "--appendonly", "yes"]
+  ports:
+   - "6379:6379"
+  volumes:
+   - redis-data:/data
+  healthcheck:
+   test: ["CMD", "redis-cli", "ping"]
+   interval: 10s
+   timeout: 5s
+   retries: 10
+  mem_limit: 256m
+  networks:
+   - finstream
+ market-producer:
+  build:
+   context: .
+   dockerfile: Dockerfile.producers
+  container_name: finstream-market-producer
+  env_file:
+   - .env
+  environment:
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   SCHEMA_REGISTRY_URL: http://schema-registry:8081
+  depends_on:
+   - kafka
+   - schema-registry
+  command: ["python", "-m", "src.producers.market_producer"]
+  networks:
+   - finstream
 
-  flink-jobmanager:
-    image: flink:1.19.1-scala_2.12-java17
-    container_name: finstream-flink-jobmanager
-    profiles:
-      - streaming
-    command: jobmanager
-    ports:
-      - "8082:8081"
-      - "9249:9249"
-    environment:
-      <<: *aws-env
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
-      FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
-        jobmanager.memory.process.size: 768m
-        parallelism.default: 1
-        state.backend: rocksdb
-        state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
-        execution.checkpointing.interval: 10000
-        metrics.reporters: prom
-        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
-        metrics.reporter.prom.port: 9249
-        s3.access-key: ${AWS_ACCESS_KEY_ID:-dummy}
-        s3.secret-key: ${AWS_SECRET_ACCESS_KEY:-dummy}
-        s3.region: ${AWS_REGION:-us-east-1}
-    volumes:
-      - ./flink/jobs:/opt/flink/usrlib
-      - flink-checkpoints:/tmp/flink/checkpoints
-    depends_on:
-      kafka:
-        condition: service_healthy
-      schema-registry:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    mem_limit: 1g
-    networks:
-      - finstream
+ news-producer:
+  build:
+   context: .
+   dockerfile: Dockerfile.producers
+  container_name: finstream-news-producer
+  env_file:
+   - .env
+  environment:
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   SCHEMA_REGISTRY_URL: http://schema-registry:8081
+  depends_on:
+   - kafka
+   - schema-registry
+  command: ["python", "-m", "src.producers.news_producer"]
+  networks:
+   - finstream
 
-  flink-taskmanager:
-    image: flink:1.19.1-scala_2.12-java17
-    container_name: finstream-flink-taskmanager
-    profiles:
-      - streaming
-    command: taskmanager
-    ports:
-      - "9250:9249"
-    environment:
-      <<: *aws-env
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      FLINK_CHECKPOINT_DIR: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
-      FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
-        taskmanager.numberOfTaskSlots: 1
-        taskmanager.memory.process.size: 1024m
-        parallelism.default: 1
-        state.backend: rocksdb
-        state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
-        metrics.reporters: prom
-        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporter
-        metrics.reporter.prom.port: 9249
-        s3.access-key: ${AWS_ACCESS_KEY_ID:-dummy}
-        s3.secret-key: ${AWS_SECRET_ACCESS_KEY:-dummy}
-        s3.region: ${AWS_REGION:-us-east-1}
-    volumes:
-      - ./flink/jobs:/opt/flink/usrlib
-      - flink-checkpoints:/tmp/flink/checkpoints
-    depends_on:
-      flink-jobmanager:
-        condition: service_started
-    mem_limit: 1g
-    networks:
-      - finstream
+ finnhub-stream-producer:
+  build:
+   context: .
+   dockerfile: Dockerfile.producers
+  container_name: finstream-finnhub-stream-producer
+  env_file:
+   - .env
+  environment:
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   SCHEMA_REGISTRY_URL: http://schema-registry:8081
+  depends_on:
+   - kafka
+   - schema-registry
+  command: ["python", "-m", "src.producers.finnhub_stream_producer"]
+  networks:
+   - finstream
 
-  clickhouse:
-    image: clickhouse/clickhouse-server:24.7
-    container_name: finstream-clickhouse
-    profiles:
-      - analytics
-      - streaming
-    env_file: .env
-    environment:
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-finstream}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-finstream}
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-finstream}
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    ports:
-      - "8123:8123"
-      - "9009:9000"
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-      - ./clickhouse/init:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    mem_limit: 1g
-    networks:
-      - finstream
+ historical-market-producer:
+  build:
+   context: .
+   dockerfile: Dockerfile.producers
+  container_name: finstream-historical-market-producer
+  env_file:
+   - .env
+  environment:
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   SCHEMA_REGISTRY_URL: http://schema-registry:8081
 
-  spark-master:
-    image: apache/spark:3.5.1-java17-python3
-    container_name: finstream-spark-master
-    profiles:
-      - lakehouse
-    command: >
-      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
-      --host spark-master
-      --port 7077
-      --webui-port 8080
-    environment:
-      <<: *aws-env
-    ports:
-      - "7077:7077"
-      - "8083:8080"
-    volumes:
-      - ./spark/jobs:/opt/spark/jobs
-      - ./dbt:/opt/spark/dbt
-    mem_limit: 1g
-    networks:
-      - finstream
+  volumes:
+   - ./producer_state:/app/state
+  depends_on:
+   kafka:
+    condition: service_healthy
+   schema-registry:
+    condition: service_healthy
+  command: ["python", "-m", "src.producers.market_historical_replay_producer"]
+  networks:
+   - finstream
 
-  spark-worker:
-    image: apache/spark:3.5.1-java17-python3
-    container_name: finstream-spark-worker
-    profiles:
-      - lakehouse
-    command: >
-      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
-      spark://spark-master:7077
-      --webui-port 8081
-      --cores 1
-      --memory 1G
-    environment:
-      <<: *aws-env
-    ports:
-      - "8084:8081"
-    volumes:
-      - ./spark/jobs:/opt/spark/jobs
-      - ./dbt:/opt/spark/dbt
-    depends_on:
-      spark-master:
-        condition: service_started
-    mem_limit: 1g
-    networks:
-      - finstream
+ historical-news-producer:
+  build:
+   context: .
+   dockerfile: Dockerfile.producers
+  container_name: finstream-historical-news-producer
+  env_file:
+   - .env
+  environment:
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   SCHEMA_REGISTRY_URL: http://schema-registry:8081
+  volumes:
+   - ./producer_state:/app/state
+  depends_on:
+   kafka:
+    condition: service_healthy
+   schema-registry:
+    condition: service_healthy
+  command: ["python", "-m", "src.producers.news_historical_replay_producer"]
+  networks:
+   - finstream
 
-  postgres:
-    image: postgres:15-alpine
-    container_name: finstream-postgres
-    profiles:
-      - orchestration
-    env_file: .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-finstream}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finstream}
-      POSTGRES_DB: ${POSTGRES_DB:-airflow}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finstream} -d ${POSTGRES_DB:-airflow}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    mem_limit: 512m
-    networks:
-      - finstream
+ flink-jobmanager:
+  build:
+   context: .
+   dockerfile: Dockerfile.flink
+  container_name: finstream-flink-jobmanager
+  ports:
+   - "8082:8081"
+  command: jobmanager
+  env_file:
+   - .env
+  environment:
+   JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   SCHEMA_REGISTRY_URL: http://schema-registry:8081
 
-  airflow-init:
-    <<: *airflow-common
-    container_name: finstream-airflow-init
-    profiles:
-      - orchestration
-    entrypoint: /bin/bash
-    command: >
-      -c "
-      airflow db migrate &&
-      airflow users create
-      --username $${AIRFLOW_ADMIN_USER:-admin}
-      --password $${AIRFLOW_ADMIN_PASSWORD:-admin}
-      --firstname FinStream
-      --lastname Admin
-      --role Admin
-      --email $${AIRFLOW_ADMIN_EMAIL:-admin@finstream.local}
-      || true
-      "
-    depends_on:
-      postgres:
-        condition: service_healthy
+   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+   AWS_REGION: ${AWS_REGION}
+   AWS_DEFAULT_REGION: ${AWS_REGION}
 
-  airflow-webserver:
-    <<: *airflow-common
-    container_name: finstream-airflow-webserver
-    profiles:
-      - orchestration
-    command: webserver
-    ports:
-      - "8080:8080"
-    depends_on:
-      airflow-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    mem_limit: 1g
+   FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+   FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET}
+   MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET}
 
-  airflow-scheduler:
-    <<: *airflow-common
-    container_name: finstream-airflow-scheduler
-    profiles:
-      - orchestration
-    command: scheduler
-    depends_on:
-      airflow-init:
-        condition: service_completed_successfully
-    mem_limit: 1g
+   S3_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+   S3_BRONZE_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze
+   S3_SILVER_PATH: s3://${FINSTREAM_SILVER_BUCKET}/silver
 
-  superset:
-    image: apache/superset:4.1.2
-    container_name: finstream-superset
-    profiles:
-      - analytics
-    env_file: .env
-    environment:
-      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-this-secret-key}
-      SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-admin}
-      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
-      SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@finstream.local}
-    ports:
-      - "8090:8088"
-    volumes:
-      - superset-home:/app/superset_home
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    command: >
-      /bin/sh -c "
-      superset db upgrade &&
-      superset fab create-admin
-      --username $${SUPERSET_ADMIN_USER:-admin}
-      --firstname FinStream
-      --lastname Admin
-      --email $${SUPERSET_ADMIN_EMAIL:-admin@finstream.local}
-      --password $${SUPERSET_ADMIN_PASSWORD:-admin}
-      || true &&
-      superset init &&
-      superset run -h 0.0.0.0 -p 8088 --with-threads
-      "
-    mem_limit: 1g
-    networks:
-      - finstream
+  depends_on:
+   kafka:
+    condition: service_healthy
+   schema-registry:
+    condition: service_healthy
+  networks:
+   - finstream
+ ##
+ flink-taskmanager:
+  build:
+   context: .
+   dockerfile: Dockerfile.flink
+  # container_name: finstream-flink-taskmanager
+  command: taskmanager
+  #  CHANGED: removed container_name (can't have duplicate names across replicas)
+  # container_name: finstream-flink-taskmanager
+  deploy:
+   replicas: 2 #  2 TaskManagers × 4 slots each = 8 total slots
+  env_file:
+   - .env
+  environment:
+   JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+   TASK_MANAGER_NUMBER_OF_TASK_SLOTS: 4
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   SCHEMA_REGISTRY_URL: http://schema-registry:8081
 
-  prometheus:
-    image: prom/prometheus:v2.53.1
-    container_name: finstream-prometheus
-    profiles:
-      - monitoring
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    mem_limit: 512m
-    networks:
-      - finstream
+   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+   AWS_REGION: ${AWS_REGION}
+   AWS_DEFAULT_REGION: ${AWS_REGION}
 
-  grafana:
-    image: grafana/grafana:11.1.0
-    container_name: finstream-grafana
-    profiles:
-      - monitoring
-    ports:
-      - "3001:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-    volumes:
-      - grafana-data:/var/lib/grafana
-    depends_on:
-      prometheus:
-        condition: service_started
-    mem_limit: 512m
-    networks:
-      - finstream
+   FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+   FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET}
+   MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET}
 
-  mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.14.3
-    container_name: finstream-mlflow
-    profiles:
-      - ml
-    env_file: .env
-    environment:
-      <<: *aws-env
-    ports:
-      - "5000:5000"
-    volumes:
-      - mlflow-data:/mlflow
-    command: >
-      /bin/sh -c "
-      pip install --no-cache-dir boto3 >/dev/null 2>&1 &&
-      mlflow server
-      --host 0.0.0.0
-      --port 5000
-      --backend-store-uri sqlite:////mlflow/mlflow.db
-      --default-artifact-root s3://$${MLFLOW_ARTIFACT_BUCKET}/artifacts
-      "
-    mem_limit: 1g
-    networks:
-      - finstream
+   S3_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
+   S3_BRONZE_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze
+   S3_SILVER_PATH: s3://${FINSTREAM_SILVER_BUCKET}/silver
 
-  mailhog:
-    image: mailhog/mailhog:v1.0.1
-    container_name: finstream-mailhog
-    profiles:
-      - apps
-    ports:
-      - "1025:1025"
-      - "8025:8025"
-    mem_limit: 256m
-    networks:
-      - finstream
+  depends_on:
+   - flink-jobmanager
+  networks:
+   - finstream
+ ##
+ clickhouse:
+  image: clickhouse/clickhouse-server:24.7
+  container_name: finstream-clickhouse
+  profiles:
+   - analytics
+   - streaming
+  env_file: .env
+  environment:
+   CLICKHOUSE_USER: ${CLICKHOUSE_USER:-finstream}
+   CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-finstream}
+   CLICKHOUSE_DB: ${CLICKHOUSE_DB:-finstream}
+   CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+  ports:
+   - "8123:8123"
+   - "9009:9000"
+  volumes:
+   - clickhouse-data:/var/lib/clickhouse
+   - ./clickhouse/init:/docker-entrypoint-initdb.d
+  healthcheck:
+   test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
+   interval: 10s
+   timeout: 5s
+   retries: 12
+  mem_limit: 1g
+  networks:
+   - finstream
 
-  alert-consumer:
-    image: python:3.11-slim
-    container_name: finstream-alert-consumer
-    profiles:
-      - apps
-    working_dir: /app
-    volumes:
-      - ./alerting:/app
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      ALERT_TOPIC: fraud_alerts
-      SMTP_HOST: mailhog
-      SMTP_PORT: 1025
-    command: >
-      sh -c "
-      pip install --no-cache-dir confluent-kafka requests >/dev/null 2>&1 &&
-      python alert_consumer.py
-      "
-    depends_on:
-      kafka-init:
-        condition: service_completed_successfully
-      mailhog:
-        condition: service_started
-    mem_limit: 512m
-    networks:
-      - finstream
+ spark-master:
+  image: apache/spark:3.5.1-java17-python3
+  container_name: finstream-spark-master
+  profiles:
+   - lakehouse
+  command: >
+   /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+   --host spark-master
+   --port 7077
+   --webui-port 8080
+  environment:
+   <<: *aws-env
+  ports:
+   - "7077:7077"
+   - "8083:8080"
+  volumes:
+   - ./spark/jobs:/opt/spark/jobs
+   - ./dbt:/opt/spark/dbt
+  mem_limit: 1g
+  networks:
+   - finstream
 
-  s3-init:
-    image: amazon/aws-cli:2.15.57
-    container_name: finstream-s3-init
-    profiles:
-      - setup
-    environment:
-      <<: *aws-env
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      set -e
+ spark-worker:
+  image: apache/spark:3.5.1-java17-python3
+  container_name: finstream-spark-worker
+  profiles:
+   - lakehouse
+  command: >
+   /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+   spark://spark-master:7077
+   --webui-port 8081
+   --cores 1
+   --memory 1G
+  environment:
+   <<: *aws-env
+  ports:
+   - "8084:8081"
+  volumes:
+   - ./spark/jobs:/opt/spark/jobs
+   - ./dbt:/opt/spark/dbt
+  depends_on:
+   spark-master:
+    condition: service_started
+  mem_limit: 1g
+  networks:
+   - finstream
 
-      for bucket in \
-        "$$FINSTREAM_BRONZE_BUCKET" \
-        "$$FINSTREAM_SILVER_BUCKET" \
-        "$$FINSTREAM_GOLD_BUCKET" \
-        "$$FINSTREAM_CHECKPOINT_BUCKET" \
-        "$$MLFLOW_ARTIFACT_BUCKET"
-      do
-        echo "Creating bucket: $$bucket"
+ postgres:
+  image: postgres:15-alpine
+  container_name: finstream-postgres
+  profiles:
+   - orchestration
+  env_file: .env
+  environment:
+   POSTGRES_USER: ${POSTGRES_USER:-finstream}
+   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finstream}
+   POSTGRES_DB: ${POSTGRES_DB:-airflow}
+  ports:
+   - "5432:5432"
+  volumes:
+   - postgres-data:/var/lib/postgresql/data
+  healthcheck:
+   test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finstream} -d ${POSTGRES_DB:-airflow}"]
+   interval: 10s
+   timeout: 5s
+   retries: 10
+  mem_limit: 512m
+  networks:
+   - finstream
 
-        if [ "$$AWS_REGION" = "us-east-1" ]; then
-          aws s3api create-bucket \
-            --bucket "$$bucket" \
-            --region "$$AWS_REGION" || true
-        else
-          aws s3api create-bucket \
-            --bucket "$$bucket" \
-            --region "$$AWS_REGION" \
-            --create-bucket-configuration LocationConstraint="$$AWS_REGION" || true
-        fi
-      done
+ airflow-init:
+  <<: *airflow-common
+  container_name: finstream-airflow-init
+  profiles:
+   - orchestration
+  entrypoint: /bin/bash
+  command: >
+   -c "
+   airflow db migrate &&
+   airflow users create
+   --username $${AIRFLOW_ADMIN_USER:-admin}
+   --password $${AIRFLOW_ADMIN_PASSWORD:-admin}
+   --firstname FinStream
+   --lastname Admin
+   --role Admin
+   --email $${AIRFLOW_ADMIN_EMAIL:-admin@finstream.local}
+   || true
+   "
+  depends_on:
+   postgres:
+    condition: service_healthy
 
-      echo "Available buckets:"
-      aws s3 ls
-    networks:
-      - finstream
+ airflow-webserver:
+  <<: *airflow-common
+  container_name: finstream-airflow-webserver
+  profiles:
+   - orchestration
+  command: webserver
+  ports:
+   - "8080:8080"
+  depends_on:
+   airflow-init:
+    condition: service_completed_successfully
+  healthcheck:
+   test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
+   interval: 30s
+   timeout: 10s
+   retries: 5
+  mem_limit: 1g
+
+ airflow-scheduler:
+  <<: *airflow-common
+  container_name: finstream-airflow-scheduler
+  profiles:
+   - orchestration
+  command: scheduler
+  depends_on:
+   airflow-init:
+    condition: service_completed_successfully
+  mem_limit: 1g
+
+ superset:
+  image: apache/superset:4.1.2
+  container_name: finstream-superset
+  profiles:
+   - analytics
+  env_file: .env
+  environment:
+   SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-this-secret-key}
+   SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-admin}
+   SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+   SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@finstream.local}
+  ports:
+   - "8090:8088"
+  volumes:
+   - superset-home:/app/superset_home
+  depends_on:
+   clickhouse:
+    condition: service_healthy
+  command: >
+   /bin/sh -c "
+   superset db upgrade &&
+   superset fab create-admin
+   --username $${SUPERSET_ADMIN_USER:-admin}
+   --firstname FinStream
+   --lastname Admin
+   --email $${SUPERSET_ADMIN_EMAIL:-admin@finstream.local}
+   --password $${SUPERSET_ADMIN_PASSWORD:-admin}
+   || true &&
+   superset init &&
+   superset run -h 0.0.0.0 -p 8088 --with-threads
+   "
+  mem_limit: 1g
+  networks:
+   - finstream
+
+ prometheus:
+  image: prom/prometheus:v2.53.1
+  container_name: finstream-prometheus
+  profiles:
+   - monitoring
+  ports:
+   - "9090:9090"
+  volumes:
+   - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+   - prometheus-data:/prometheus
+  mem_limit: 512m
+  networks:
+   - finstream
+
+ grafana:
+  image: grafana/grafana:11.1.0
+  container_name: finstream-grafana
+  profiles:
+   - monitoring
+  ports:
+   - "3001:3000"
+  environment:
+   GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+   GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+   GF_USERS_ALLOW_SIGN_UP: "false"
+  volumes:
+   - grafana-data:/var/lib/grafana
+  depends_on:
+   prometheus:
+    condition: service_started
+  mem_limit: 512m
+  networks:
+   - finstream
+
+ mlflow:
+  image: ghcr.io/mlflow/mlflow:v2.14.3
+  container_name: finstream-mlflow
+  profiles:
+   - ml
+  env_file: .env
+  environment:
+   <<: *aws-env
+  ports:
+   - "5000:5000"
+  volumes:
+   - mlflow-data:/mlflow
+  command: >
+   /bin/sh -c "
+   pip install --no-cache-dir boto3 >/dev/null 2>&1 &&
+   mlflow server
+   --host 0.0.0.0
+   --port 5000
+   --backend-store-uri sqlite:////mlflow/mlflow.db
+   --default-artifact-root s3://$${MLFLOW_ARTIFACT_BUCKET}/artifacts
+   "
+  mem_limit: 1g
+  networks:
+   - finstream
+
+ mailhog:
+  image: mailhog/mailhog:v1.0.1
+  container_name: finstream-mailhog
+  profiles:
+   - apps
+  ports:
+   - "1025:1025"
+   - "8025:8025"
+  mem_limit: 256m
+  networks:
+   - finstream
+
+ alert-consumer:
+  image: python:3.11-slim
+  container_name: finstream-alert-consumer
+  profiles:
+   - apps
+  working_dir: /app
+  volumes:
+   - ./alerting:/app
+  environment:
+   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+   ALERT_TOPIC: fraud_alerts
+   SMTP_HOST: mailhog
+   SMTP_PORT: 1025
+  command: >
+   sh -c "
+   pip install --no-cache-dir confluent-kafka requests >/dev/null 2>&1 &&
+   python alert_consumer.py
+   "
+  depends_on:
+   kafka-init:
+    condition: service_completed_successfully
+   mailhog:
+    condition: service_started
+  mem_limit: 512m
+  networks:
+   - finstream
+
+ s3-init:
+  image: amazon/aws-cli:2.15.57
+  container_name: finstream-s3-init
+  profiles:
+   - setup
+  environment:
+   <<: *aws-env
+  entrypoint: ["/bin/sh", "-c"]
+  command: |
+   set -e
+
+   for bucket in \
+     "$$FINSTREAM_BRONZE_BUCKET" \
+     "$$FINSTREAM_SILVER_BUCKET" \
+     "$$FINSTREAM_GOLD_BUCKET" \
+     "$$FINSTREAM_CHECKPOINT_BUCKET" \
+     "$$MLFLOW_ARTIFACT_BUCKET"
+   do
+     echo "Creating bucket: $$bucket"
+
+     if [ "$$AWS_REGION" = "us-east-1" ]; then
+       aws s3api create-bucket \
+         --bucket "$$bucket" \
+         --region "$$AWS_REGION" || true
+     else
+       aws s3api create-bucket \
+         --bucket "$$bucket" \
+         --region "$$AWS_REGION" \
+         --create-bucket-configuration LocationConstraint="$$AWS_REGION" || true
+     fi
+   done
+
+   echo "Available buckets:"
+   aws s3 ls
+  networks:
+   - finstream
 
 volumes:
-  kafka-data:
-  redis-data:
-  clickhouse-data:
-  postgres-data:
-  superset-home:
-  grafana-data:
-  prometheus-data:
-  mlflow-data:
-  flink-checkpoints:
+ kafka-data:
+ redis-data:
+ clickhouse-data:
+ postgres-data:
+ superset-home:
+ grafana-data:
+ prometheus-data:
+ mlflow-data:
+ flink-checkpoints:
 
 networks:
-  finstream:
-    driver: bridge
+ finstream:
+  driver: bridge
