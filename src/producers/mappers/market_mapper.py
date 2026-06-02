@@ -65,8 +65,6 @@ def map_finnhub_rest_quote_to_market_event(
         "symbol": str(symbol),
         "price": float(current_price),
 
-        # Keep these only if your Avro schema has them.
-        # If your schema does not have these fields, remove them.
         "open_price": float(quote["o"]) if quote.get("o") is not None else None,
         "high_price": float(quote["h"]) if quote.get("h") is not None else None,
         "low_price": float(quote["l"]) if quote.get("l") is not None else None,
@@ -106,12 +104,11 @@ def map_finnhub_trade_to_market_event(trade: dict) -> dict:
         "symbol": str(symbol),
         "price": float(price),
 
-        # For trade-level WebSocket data, OHLC is not available.
-        # Remove these fields if your schema does not include them.
-        "open_price": None,
-        "high_price": None,
-        "low_price": None,
-        "close_price": None,
+
+        "open_price": price,
+        "high_price": price,
+        "low_price": price,
+        "close_price": price,
 
         "volume": float(trade.get("v", 0)),
         "source": "finnhub_websocket",
@@ -182,8 +179,7 @@ def map_historical_market_row_to_market_event(row: pd.Series) -> dict:
 
     parsed_event_time = now_ms()
 
-    # For stream simulation, event_time means replay arrival time.
-    # The original timestamp is preserved inside raw_payload.
+
     raw_payload = row.dropna().to_dict()
 
     if original_time is not None:
@@ -195,7 +191,6 @@ def map_historical_market_row_to_market_event(row: pd.Series) -> dict:
         "symbol": str(symbol),
         "price": close_price,
 
-        # Remove these if your Avro schema does not include OHLC fields.
         "open_price": float(open_price) if open_price is not None else None,
         "high_price": float(high_price) if high_price is not None else None,
         "low_price": float(low_price) if low_price is not None else None,
