@@ -99,3 +99,6 @@ flink/jobs/*.jar
 # =========================
 .DS_Store
 Thumbs.db
+
+# Flink runtime checkpoints
+flink/checkpoints/

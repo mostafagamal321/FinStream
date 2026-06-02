@@ -281,6 +281,7 @@ services:
 
    REDIS_HOST: redis
    REDIS_PORT: 6379
+   REDIS_TIMEOUT_MS: ${REDIS_TIMEOUT_MS:-200}
 
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
@@ -342,6 +343,7 @@ services:
 
    REDIS_HOST: redis
    REDIS_PORT: 6379
+   REDIS_TIMEOUT_MS: ${REDIS_TIMEOUT_MS:-200}
 
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
