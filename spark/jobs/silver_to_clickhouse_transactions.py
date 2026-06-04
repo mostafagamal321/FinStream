@@ -4,21 +4,6 @@ FinStream — Silver Transactions → ClickHouse (Incremental)
 Owner   : Saleh (E3)
 Source  : s3a://<silver-bucket>/silver/transactions/
 Target  : ClickHouse — finstream.silver_transactions
-
-Logic:
-    1. Check last loaded event_day in ClickHouse
-    2. List all event_day partitions in S3 Silver
-    3. Load only new partitions (incremental)
-    4. If ClickHouse is empty → full load
-
-Run:
-    spark-submit --packages org.apache.hadoop:hadoop-aws:3.3.4 spark/jobs/silver_to_clickhouse_transactions.py
-
-    # Force specific date:
-    spark-submit ... silver_to_clickhouse_transactions.py --date 2020-01-02
-
-    # Force full reload:
-    spark-submit ... silver_to_clickhouse_transactions.py --full-reload
 """
 
 import os
@@ -34,7 +19,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("silver_to_clickhouse_transactions")
 
 
-# ── 1. Args ───────────────────────────────────────────────────────────────────
 def parse_args():
     parser = argparse.ArgumentParser(description="Silver Transactions → ClickHouse (Incremental)")
     parser.add_argument("--date",        type=str, default=None,  help="Force single date YYYY-MM-DD")
@@ -42,7 +26,6 @@ def parse_args():
     return parser.parse_args()
 
 
-# ── 2. Config ─────────────────────────────────────────────────────────────────
 def get_config():
     return {
         "silver_bucket" : os.environ.get("FINSTREAM_SILVER_BUCKET", "finstream-silver-mostafa-dev"),
@@ -54,7 +37,6 @@ def get_config():
     }
 
 
-# ── 3. Spark Session ──────────────────────────────────────────────────────────
 def create_spark_session():
     spark = (
         SparkSession.builder
@@ -73,9 +55,7 @@ def create_spark_session():
     return spark
 
 
-# ── 4. Last loaded date from ClickHouse ───────────────────────────────────────
 def get_last_loaded_date(cfg):
-    """Returns last event_day in ClickHouse. Returns None if table is empty."""
     try:
         client = clickhouse_connect.get_client(
             host=cfg["ch_host"], port=8123,
@@ -98,9 +78,7 @@ def get_last_loaded_date(cfg):
         return None
 
 
-# ── 5. List S3 Silver partitions ──────────────────────────────────────────────
 def get_s3_partitions(spark, silver_root):
-    """Lists all event_day=YYYY-MM-DD partitions in S3 Silver."""
     try:
         jvm      = spark.sparkContext._jvm
         fs       = jvm.org.apache.hadoop.fs.FileSystem.get(
@@ -123,7 +101,6 @@ def get_s3_partitions(spark, silver_root):
         sys.exit(1)
 
 
-# ── 6. Decide which partitions to load ───────────────────────────────────────
 def get_partitions_to_load(all_partitions, last_loaded_date, full_reload):
     if full_reload or last_loaded_date is None:
         log.info("Loading ALL %s partitions", len(all_partitions))
@@ -139,7 +116,6 @@ def get_partitions_to_load(all_partitions, last_loaded_date, full_reload):
     return new_partitions
 
 
-# ── 7. Read Silver ────────────────────────────────────────────────────────────
 def read_silver_partitions(spark, silver_root, partitions):
     paths = [f"{silver_root}event_day={p}/" for p in partitions]
     log.info("Reading %s partition(s)...", len(paths))
@@ -149,9 +125,7 @@ def read_silver_partitions(spark, silver_root, partitions):
     return df, count
 
 
-# ── 8. Prepare columns ────────────────────────────────────────────────────────
 def prepare_for_clickhouse(df):
-    from pyspark.sql import functions as F
     if "event_day" not in df.columns:
         df = df.withColumn("event_day", F.to_date("event_ts"))
     return df.select(
@@ -167,9 +141,14 @@ def prepare_for_clickhouse(df):
     )
 
 
-# ── 9. Write to ClickHouse ────────────────────────────────────────────────────
-def write_to_clickhouse(df, cfg):
+def write_to_clickhouse(df, cfg, total_count):
     ch_url = f"jdbc:clickhouse://{cfg['ch_host']}:8123/{cfg['ch_db']}"
+
+    # ── FIX: repartition عشان كل partition صغيرة ≈ 10k row ──
+    num_partitions = max(1, total_count // 10000)
+    log.info("Repartitioning into %s chunks (~10k rows each)", num_partitions)
+    df = df.repartition(num_partitions)
+
     log.info("Writing to ClickHouse %s.%s ...", cfg["ch_db"], cfg["ch_table"])
     (
         df.write
@@ -179,14 +158,13 @@ def write_to_clickhouse(df, cfg):
         .option("user",      cfg["ch_user"])
         .option("password",  cfg["ch_password"])
         .option("driver",    "com.clickhouse.jdbc.ClickHouseDriver")
-        .option("batchsize", "50000")
+        .option("batchsize", "5000")   # ── FIX: قلّلنا من 50k لـ 5k
         .mode("append")
         .save()
     )
     log.info("ClickHouse write complete ✅")
 
 
-# ── 10. Main ──────────────────────────────────────────────────────────────────
 def main():
     args  = parse_args()
     cfg   = get_config()
@@ -194,27 +172,35 @@ def main():
 
     silver_root = f"s3a://{cfg['silver_bucket']}/silver/transactions/"
 
-    # Manual single date override
     if args.date:
         log.info("Manual override — date: %s", args.date)
         partitions_to_load = [args.date]
-
-    # Incremental or full reload
     else:
         all_partitions     = get_s3_partitions(spark, silver_root)
         last_loaded_date   = None if args.full_reload else get_last_loaded_date(cfg)
         partitions_to_load = get_partitions_to_load(all_partitions, last_loaded_date, args.full_reload)
 
-    # Nothing new
     if not partitions_to_load:
         log.info("Nothing to load — exiting.")
         spark.stop()
         return
 
-    # Read → Prepare → Write
     silver_df, count = read_silver_partitions(spark, silver_root, partitions_to_load)
     ch_df            = prepare_for_clickhouse(silver_df)
-    write_to_clickhouse(ch_df, cfg)
+
+    # ── FIX: لو full-reload امسح الداتا القديمة الأول ──
+    if args.full_reload or (not args.date and get_last_loaded_date(cfg) is None):
+        log.info("Truncating ClickHouse table before full reload...")
+        client = clickhouse_connect.get_client(
+            host=cfg["ch_host"], port=8123,
+            username=cfg["ch_user"], password=cfg["ch_password"],
+            database=cfg["ch_db"],
+        )
+        client.command(f"TRUNCATE TABLE {cfg['ch_table']}")
+        client.close()
+        log.info("Table truncated ✅")
+
+    write_to_clickhouse(ch_df, cfg, count)
 
     log.info("Job complete — %s rows | partitions: %s", f"{count:,}", partitions_to_load)
     spark.stop()
