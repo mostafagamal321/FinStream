@@ -151,6 +151,9 @@ services:
   container_name: finstream-redis
   profiles:
    - streaming
+   - features
+   - serving
+   - ml
   command: ["redis-server", "--appendonly", "yes"]
   ports:
    - "6379:6379"
@@ -168,8 +171,9 @@ services:
   profiles:
    - producers
   build:
-   context: .
-   dockerfile: Dockerfile.producers
+    context: .
+    dockerfile: Dockerfile.producers
+  image: finstream-market-producer
   container_name: finstream-market-producer
   env_file:
    - .env
@@ -263,6 +267,34 @@ services:
   networks:
    - finstream
 
+ redis-feature-loader:
+  build:
+   context: .
+   dockerfile: Dockerfile.features
+  image: finstream-redis-feature-loader
+  container_name: finstream-redis-feature-loader
+  profiles:
+   - features
+  env_file:
+   - .env
+  environment:
+   CLICKHOUSE_HTTP_URL: http://clickhouse:8123
+   CLICKHOUSE_USER: ${CLICKHOUSE_USER:-finstream}
+   CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-finstream}
+   CLICKHOUSE_DB: ${CLICKHOUSE_DB:-finstream}
+   REDIS_HOST_LOCAL: redis
+   REDIS_PORT_LOCAL: 6379
+   REDIS_DB: 0
+   FEATURE_TTL_SECONDS: ${FEATURE_TTL_SECONDS:-604800}
+  depends_on:
+   clickhouse:
+    condition: service_healthy
+   redis:
+    condition: service_healthy
+  command: ["python", "-m", "src.features.redis_feature_loader"]
+  networks:
+   - finstream
+
  flink-jobmanager:
   image: flink:1.19.1-scala_2.12-java17
   container_name: finstream-flink-jobmanager
@@ -300,6 +332,9 @@ services:
 
    ENABLE_FRAUD_ALERTS_SINK: ${ENABLE_FRAUD_ALERTS_SINK:-true}
    TOPIC_FRAUD_ALERTS: ${TOPIC_FRAUD_ALERTS:-fraud_alerts}
+
+   ENABLE_ML_SCORECARD: ${ENABLE_ML_SCORECARD:-true}
+   MODEL_SCORECARD_S3_URI: ${MODEL_SCORECARD_S3_URI:-s3://finstream-silver-mostafa-dev/ml/models/fraud_scorecard/latest/model_scorecard.json}
 
    FLINK_PROPERTIES: |
     jobmanager.rpc.address: flink-jobmanager
@@ -363,6 +398,9 @@ services:
    ENABLE_FRAUD_ALERTS_SINK: ${ENABLE_FRAUD_ALERTS_SINK:-true}
    TOPIC_FRAUD_ALERTS: ${TOPIC_FRAUD_ALERTS:-fraud_alerts}
 
+   ENABLE_ML_SCORECARD: ${ENABLE_ML_SCORECARD:-true}
+   MODEL_SCORECARD_S3_URI: ${MODEL_SCORECARD_S3_URI:-s3://finstream-silver-mostafa-dev/ml/models/fraud_scorecard/latest/model_scorecard.json}
+
    FLINK_PROPERTIES: |
     jobmanager.rpc.address: flink-jobmanager
     taskmanager.numberOfTaskSlots: 1
@@ -392,6 +430,7 @@ services:
   profiles:
    - analytics
    - streaming
+   - features
   env_file: .env
   environment:
    CLICKHOUSE_USER: ${CLICKHOUSE_USER:-finstream}
@@ -409,12 +448,15 @@ services:
    interval: 10s
    timeout: 5s
    retries: 12
-  mem_limit: 1g
+  mem_limit: 4g
   networks:
    - finstream
 
  spark-master:
-  image: apache/spark:3.5.1-java17-python3
+  build:
+   context: .
+   dockerfile: Dockerfile.spark
+  image: finstream-spark:3.5.1
   container_name: finstream-spark-master
   profiles:
    - lakehouse
@@ -423,20 +465,27 @@ services:
    --host spark-master
    --port 7077
    --webui-port 8080
+  env_file:
+   - .env
   environment:
    <<: *aws-env
+   SPARK_LOCAL_DIRS: /tmp/spark
   ports:
    - "7077:7077"
    - "8083:8080"
   volumes:
    - ./spark/jobs:/opt/spark/jobs
-   - ./dbt:/opt/spark/dbt
-  mem_limit: 1g
+   - ./spark/output:/opt/spark/output
+   - ./ml:/opt/spark/ml
+  mem_limit: 4g
   networks:
    - finstream
 
  spark-worker:
-  image: apache/spark:3.5.1-java17-python3
+  build:
+   context: .
+   dockerfile: Dockerfile.spark
+  image: finstream-spark:3.5.1
   container_name: finstream-spark-worker
   profiles:
    - lakehouse
@@ -444,21 +493,26 @@ services:
    /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
    spark://spark-master:7077
    --webui-port 8081
-   --cores 1
-   --memory 1G
+   --cores 2
+   --memory 3G
+  env_file:
+   - .env
   environment:
    <<: *aws-env
+   SPARK_LOCAL_DIRS: /tmp/spark
   ports:
    - "8084:8081"
   volumes:
    - ./spark/jobs:/opt/spark/jobs
-   - ./dbt:/opt/spark/dbt
+   - ./spark/output:/opt/spark/output
+   - ./ml:/opt/spark/ml
   depends_on:
    spark-master:
     condition: service_started
-  mem_limit: 1g
+  mem_limit: 4g
   networks:
    - finstream
+
 
  postgres:
   image: postgres:15-alpine
@@ -670,7 +724,7 @@ services:
  s3-init:
   image: amazon/aws-cli:2.15.57
   container_name: finstream-s3-init
-  profiles:
+  profiles:     
    - setup
   dns:
    - 8.8.8.8

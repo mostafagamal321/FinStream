@@ -35,7 +35,17 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.api.common.functions.RichMapFunction;
+import org.apache.flink.core.fs.FSDataInputStream;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.JedisPoolConfig;
+
+import java.io.ByteArrayOutputStream;
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -43,7 +53,9 @@ import java.sql.Types;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
 public class TransactionScoringJob {
@@ -83,9 +95,30 @@ public class TransactionScoringJob {
                 .process(new TransactionDeduplicationFunction(dedupTtlDays))
                 .name("deduplicate_by_transaction_id");
 
-        DataStream<ScoredTransaction> scoredTransactions = uniqueTransactions
-                .map(new BaselineScoringFunction())
-                .name("baseline_rule_scoring");
+        boolean enableMlScorecard = Boolean.parseBoolean(
+                getEnv("ENABLE_ML_SCORECARD", "true")
+        );
+
+        DataStream<ScoredTransaction> scoredTransactions;
+
+        if (enableMlScorecard) {
+            String modelScorecardUri = getEnv(
+                    "MODEL_SCORECARD_S3_URI",
+                    "s3://finstream-silver-mostafa-dev/ml/models/fraud_scorecard/latest/model_scorecard.json"
+            );
+
+            scoredTransactions = uniqueTransactions
+                    .map(new ScorecardScoringFunction(modelScorecardUri))
+                    .name("redis_feature_scorecard_ml_scoring");
+
+            System.out.println("ML scorecard enabled. modelScorecardUri=" + modelScorecardUri);
+        } else {
+            scoredTransactions = uniqueTransactions
+                    .map(new BaselineScoringFunction())
+                    .name("baseline_rule_scoring");
+
+            System.out.println("ML scorecard disabled. Using rule baseline only.");
+        }
 
         scoredTransactions
                 .print()
@@ -573,6 +606,10 @@ public static class FraudAlertJsonMapper
 
         @Override
         public ScoredTransaction map(TransactionEvent event) {
+            return scoreWithRules(event);
+        }
+
+        public static ScoredTransaction scoreWithRules(TransactionEvent event) {
             double ruleScore = 0.0;
             List<String> reasonCodes = new ArrayList<>();
 
@@ -657,6 +694,267 @@ public static class FraudAlertJsonMapper
 
         private static boolean isBlank(String value) {
             return value == null || value.isBlank();
+        }
+    }
+
+    public static class ScorecardScoringFunction
+            extends RichMapFunction<TransactionEvent, ScoredTransaction> {
+
+        private final String modelScorecardUri;
+
+        private transient ScorecardModel scorecardModel;
+        private transient JedisPool jedisPool;
+
+        public ScorecardScoringFunction(String modelScorecardUri) {
+            this.modelScorecardUri = modelScorecardUri;
+        }
+
+        @Override
+        public void open(Configuration parameters) throws Exception {
+            this.scorecardModel = ScorecardModel.load(modelScorecardUri);
+
+            String redisHost = getEnv("REDIS_HOST", "redis");
+            int redisPort = Integer.parseInt(getEnv("REDIS_PORT", "6379"));
+            int redisTimeoutMs = Integer.parseInt(getEnv("REDIS_TIMEOUT_MS", "200"));
+
+            JedisPoolConfig poolConfig = new JedisPoolConfig();
+            poolConfig.setMaxTotal(8);
+            poolConfig.setMaxIdle(4);
+            poolConfig.setMinIdle(1);
+
+            this.jedisPool = new JedisPool(
+                    poolConfig,
+                    redisHost,
+                    redisPort,
+                    redisTimeoutMs
+            );
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.ping();
+            }
+
+            System.out.println(
+                    "Scorecard model loaded. version="
+                            + scorecardModel.modelVersion
+                            + ", reviewThreshold="
+                            + scorecardModel.reviewThreshold
+                            + ", blockThreshold="
+                            + scorecardModel.blockThreshold
+            );
+        }
+
+        @Override
+        public void close() {
+            if (jedisPool != null) {
+                jedisPool.close();
+            }
+        }
+
+        @Override
+        public ScoredTransaction map(TransactionEvent event) {
+            ScoredTransaction baseline = BaselineScoringFunction.scoreWithRules(event);
+
+            Map<String, Double> rawFeatures;
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                rawFeatures = buildFeatureMap(event, jedis);
+            } catch (Exception ex) {
+                baseline.mlScore = null;
+                baseline.fraudScore = baseline.ruleScore;
+                baseline.scoringMethod = "RULE_BASELINE_REDIS_UNAVAILABLE";
+                baseline.reasonCodes.add("REDIS_FEATURE_LOOKUP_FAILED");
+                return baseline;
+            }
+
+            double mlScore = scorecardModel.predict(rawFeatures);
+            baseline.mlScore = mlScore;
+            baseline.fraudScore = Math.max(baseline.ruleScore, mlScore);
+            baseline.scoringMethod = "RULE_PLUS_LOCAL_SCORECARD";
+
+            if (mlScore >= scorecardModel.blockThreshold) {
+                baseline.riskLevel = "HIGH";
+                baseline.decision = "BLOCK";
+                baseline.reasonCodes.add("ML_SCORECARD_BLOCK");
+            } else if (mlScore >= scorecardModel.reviewThreshold) {
+                if (!"BLOCK".equalsIgnoreCase(baseline.decision)) {
+                    baseline.riskLevel = "MEDIUM";
+                    baseline.decision = "REVIEW";
+                }
+                baseline.reasonCodes.add("ML_SCORECARD_REVIEW");
+            } else {
+                baseline.reasonCodes.add("ML_SCORECARD_LOW_RISK");
+            }
+
+            return baseline;
+        }
+
+        private Map<String, Double> buildFeatureMap(TransactionEvent event, Jedis jedis) {
+            Map<String, Double> features = new LinkedHashMap<>();
+
+            double amount = event.amount;
+
+            double merchantFraudRateSmoothed = redisDouble(
+                    jedis, "merchant:fraud_rate_smoothed:" + nullToEmpty(event.merchantId), 0.0);
+            double merchantFraudCount = redisDouble(
+                    jedis, "merchant:fraud_count:" + nullToEmpty(event.merchantId), 0.0);
+            double merchantTxnCount = redisDouble(
+                    jedis, "merchant:txn_count:" + nullToEmpty(event.merchantId), 0.0);
+            double merchantAvgAmount = redisDouble(
+                    jedis, "merchant:avg_amount:" + nullToEmpty(event.merchantId), 0.0);
+
+            double customerFraudRateSmoothed = redisDouble(
+                    jedis, "customer:fraud_rate_smoothed:" + nullToEmpty(event.customerId), 0.0);
+            double customerFraudCount = redisDouble(
+                    jedis, "customer:fraud_count:" + nullToEmpty(event.customerId), 0.0);
+            double customerTxnCount = redisDouble(
+                    jedis, "customer:txn_count:" + nullToEmpty(event.customerId), 0.0);
+            double customerAvgAmount = redisDouble(
+                    jedis, "customer:avg_amount:" + nullToEmpty(event.customerId), 0.0);
+
+            double cardFraudRateSmoothed = redisDouble(
+                    jedis, "card:fraud_rate_smoothed:" + nullToEmpty(event.cardId), 0.0);
+            double cardFraudCount = redisDouble(
+                    jedis, "card:fraud_count:" + nullToEmpty(event.cardId), 0.0);
+            double cardTxnCount = redisDouble(
+                    jedis, "card:txn_count:" + nullToEmpty(event.cardId), 0.0);
+            double cardAvgAmount = redisDouble(
+                    jedis, "card:avg_amount:" + nullToEmpty(event.cardId), 0.0);
+
+            features.put("amount", amount);
+            features.put("merchant_fraud_rate_smoothed", merchantFraudRateSmoothed);
+            features.put("merchant_fraud_count", merchantFraudCount);
+            features.put("merchant_txn_count", merchantTxnCount);
+            features.put("merchant_avg_amount", merchantAvgAmount);
+            features.put("customer_fraud_rate_smoothed", customerFraudRateSmoothed);
+            features.put("customer_fraud_count", customerFraudCount);
+            features.put("customer_txn_count", customerTxnCount);
+            features.put("customer_avg_amount", customerAvgAmount);
+            features.put("card_fraud_rate_smoothed", cardFraudRateSmoothed);
+            features.put("card_fraud_count", cardFraudCount);
+            features.put("card_txn_count", cardTxnCount);
+            features.put("card_avg_amount", cardAvgAmount);
+            features.put("amount_to_customer_avg", safeRatio(amount, customerAvgAmount));
+            features.put("amount_to_card_avg", safeRatio(amount, cardAvgAmount));
+            features.put("amount_to_merchant_avg", safeRatio(amount, merchantAvgAmount));
+
+            return features;
+        }
+
+        private static double redisDouble(Jedis jedis, String key, double defaultValue) {
+            String value = jedis.get(key);
+            if (value == null || value.isBlank()) {
+                return defaultValue;
+            }
+            try {
+                return Double.parseDouble(value);
+            } catch (NumberFormatException ex) {
+                return defaultValue;
+            }
+        }
+
+        private static double safeRatio(double numerator, double denominator) {
+            if (denominator <= 0.0) return 0.0;
+            return numerator / denominator;
+        }
+
+        private static String nullToEmpty(String value) {
+            return value == null ? "" : value;
+        }
+    }
+
+    public static class ScorecardModel implements Serializable {
+        public String modelVersion;
+        public List<String> featureColumns;
+        public Map<String, Double> weights;
+        public Map<String, Double> imputerMedians;
+        public Map<String, Double> scalerMeans;
+        public Map<String, Double> scalerScales;
+        public double intercept;
+        public double reviewThreshold;
+        public double blockThreshold;
+
+        public static ScorecardModel load(String modelUri) throws Exception {
+            String json = readTextFromPath(modelUri);
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(json);
+
+            ScorecardModel model = new ScorecardModel();
+            model.modelVersion = root.path("model_version").asText("unknown");
+            model.intercept = root.path("intercept").asDouble(0.0);
+            model.reviewThreshold = root.path("review_threshold").asDouble(0.30);
+            model.blockThreshold = root.path("block_threshold").asDouble(0.70);
+
+            model.featureColumns = new ArrayList<>();
+            for (JsonNode feature : root.path("feature_columns")) {
+                model.featureColumns.add(feature.asText());
+            }
+
+            model.weights = parseDoubleMap(root.path("weights"));
+            model.imputerMedians = parseDoubleMap(root.path("imputer_medians"));
+            model.scalerMeans = parseDoubleMap(root.path("scaler_means"));
+            model.scalerScales = parseDoubleMap(root.path("scaler_scales"));
+
+            if (model.featureColumns.isEmpty()) {
+                throw new IllegalStateException("Scorecard model has no feature_columns");
+            }
+
+            return model;
+        }
+
+        public double predict(Map<String, Double> rawFeatures) {
+            double z = intercept;
+
+            for (String featureName : featureColumns) {
+                double rawValue = rawFeatures.getOrDefault(
+                        featureName,
+                        imputerMedians.getOrDefault(featureName, 0.0)
+                );
+
+                if (Double.isNaN(rawValue) || Double.isInfinite(rawValue)) {
+                    rawValue = imputerMedians.getOrDefault(featureName, 0.0);
+                }
+
+                double mean = scalerMeans.getOrDefault(featureName, 0.0);
+                double scale = scalerScales.getOrDefault(featureName, 1.0);
+
+                double scaledValue;
+                if (scale == 0.0 || Double.isNaN(scale) || Double.isInfinite(scale)) {
+                    scaledValue = 0.0;
+                } else {
+                    scaledValue = (rawValue - mean) / scale;
+                }
+
+                z += weights.getOrDefault(featureName, 0.0) * scaledValue;
+            }
+
+            return sigmoid(z);
+        }
+
+        private static double sigmoid(double z) {
+            if (z >= 0) {
+                return 1.0 / (1.0 + Math.exp(-z));
+            }
+            double exp = Math.exp(z);
+            return exp / (1.0 + exp);
+        }
+
+        private static Map<String, Double> parseDoubleMap(JsonNode node) {
+            Map<String, Double> result = new LinkedHashMap<>();
+            node.fields().forEachRemaining(e -> result.put(e.getKey(), e.getValue().asDouble(0.0)));
+            return result;
+        }
+
+        private static String readTextFromPath(String uri) throws Exception {
+            Path path = new Path(uri);
+            try (FSDataInputStream inputStream = path.getFileSystem().open(path);
+                 ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
+                byte[] data = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = inputStream.read(data)) != -1) {
+                    buffer.write(data, 0, bytesRead);
+                }
+                return buffer.toString(StandardCharsets.UTF_8);
+            }
         }
     }
 
