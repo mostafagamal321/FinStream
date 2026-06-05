@@ -1,20 +1,34 @@
 import json
 import os
 import tempfile
+import time
 from datetime import datetime, timezone
 
 import boto3
 import numpy as np
 import pandas as pd
 
+from pyspark import StorageLevel
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, avg, when, lit
+from pyspark.sql.functions import col, count, avg, when, lit, rand
 
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, roc_auc_score
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+
+
+def now_ts() -> float:
+    return time.time()
+
+
+def log_step(message: str) -> None:
+    print(f"\n[{datetime.now(timezone.utc).isoformat()}] {message}", flush=True)
+
+
+def log_elapsed(step_name: str, start_time: float) -> None:
+    elapsed = time.time() - start_time
+    print(f"[TIMER] {step_name}: {elapsed:.2f} seconds", flush=True)
 
 
 def get_env(name: str, default: str) -> str:
@@ -49,7 +63,11 @@ def add_group_features(df, train_df, key_col: str, prefix: str):
             f"{prefix}_fraud_rate_smoothed",
             (col(f"{prefix}_fraud_count") + lit(1.0)) / (col(f"{prefix}_txn_count") + lit(100.0))
         )
+        .persist(StorageLevel.MEMORY_AND_DISK)
     )
+
+    # materialize stats once
+    stats.count()
 
     return df.join(stats, on=key_col, how="left")
 
@@ -100,21 +118,28 @@ def main() -> None:
         "s3://finstream-silver-mostafa-dev/ml/models/fraud_scorecard/latest/model_scorecard.json",
     )
 
-    review_threshold = float(get_env("ML_REVIEW_THRESHOLD", "0.10"))
-    block_threshold = float(get_env("ML_BLOCK_THRESHOLD", "0.30"))
+    review_threshold = float(get_env("ML_REVIEW_THRESHOLD", "0.30"))
+    block_threshold = float(get_env("ML_BLOCK_THRESHOLD", "0.70"))
+
+    # 0 means no limit
     max_training_rows = int(get_env("MAX_TRAINING_ROWS", "200000"))
 
     spark = (
         SparkSession.builder
         .appName("FinStream Fraud Scorecard Training From S3")
+        .config("spark.sql.shuffle.partitions", get_env("SPARK_SQL_SHUFFLE_PARTITIONS", "8"))
+        .config("spark.default.parallelism", get_env("SPARK_DEFAULT_PARALLELISM", "8"))
         .getOrCreate()
     )
 
     spark.sparkContext.setLogLevel("WARN")
 
-    print(f"Reading S3 training data from: {input_path}")
+    total_start = now_ts()
 
+    log_step(f"Reading S3 training data from: {input_path}")
+    step_start = now_ts()
     df = spark.read.json(input_path)
+    log_elapsed("read_json_lazy", step_start)
 
     required_columns = [
         "transaction_id",
@@ -137,31 +162,86 @@ def main() -> None:
         .filter(col("actual_is_fraud").isNotNull())
         .withColumn("label", col("actual_is_fraud").cast("int"))
         .withColumn("amount", col("amount").cast("double"))
+        .filter(col("transaction_id").isNotNull())
+        .filter(col("customer_id").isNotNull())
+        .filter(col("card_id").isNotNull())
+        .filter(col("merchant_id").isNotNull())
     )
 
-    print("Label distribution:")
-    base_df.groupBy("label").count().orderBy("label").show(truncate=False)
+    log_step("Counting base dataset and label distribution")
+    step_start = now_ts()
+
+    base_df = base_df.persist(StorageLevel.MEMORY_AND_DISK)
 
     total_rows = base_df.count()
-    if total_rows > max_training_rows:
+
+    print(f"Base rows after filtering: {total_rows}", flush=True)
+    print("Label distribution:", flush=True)
+    base_df.groupBy("label").count().orderBy("label").show(truncate=False)
+
+    log_elapsed("count_base_and_label_distribution", step_start)
+
+    if total_rows == 0:
+        raise RuntimeError("No rows available for training after filtering.")
+
+    if max_training_rows > 0 and total_rows > max_training_rows:
         fraction = max_training_rows / total_rows
-        print(f"Sampling dataset: total_rows={total_rows}, fraction={fraction}")
-        base_df = base_df.sample(withReplacement=False, fraction=fraction, seed=42)
+        log_step(f"Sampling dataset: total_rows={total_rows}, max_training_rows={max_training_rows}, fraction={fraction:.6f}")
+        step_start = now_ts()
 
-    ids_pd = base_df.select("transaction_id", "label").toPandas()
+        base_df = (
+            base_df
+            .sample(withReplacement=False, fraction=fraction, seed=42)
+            .persist(StorageLevel.MEMORY_AND_DISK)
+        )
 
-    train_ids, test_ids = train_test_split(
-        ids_pd["transaction_id"],
-        test_size=0.2,
-        random_state=42,
-        stratify=ids_pd["label"],
+        sampled_count = base_df.count()
+        print(f"Sampled rows: {sampled_count}", flush=True)
+
+        log_elapsed("sample_dataset", step_start)
+    else:
+        print(f"Using all available rows. max_training_rows={max_training_rows}", flush=True)
+
+    log_step("Creating train/test split inside Spark")
+    step_start = now_ts()
+
+    # Split inside Spark instead of collecting ids to Pandas.
+    # This is not perfectly stratified, but it avoids a heavy driver-side ids collection.
+    split_df = base_df.withColumn("split_rand", rand(seed=42)).persist(StorageLevel.MEMORY_AND_DISK)
+
+    train_df = (
+        split_df
+        .filter(col("split_rand") < 0.8)
+        .drop("split_rand")
+        .persist(StorageLevel.MEMORY_AND_DISK)
     )
 
-    train_ids_df = spark.createDataFrame(pd.DataFrame({"transaction_id": train_ids}))
-    test_ids_df = spark.createDataFrame(pd.DataFrame({"transaction_id": test_ids}))
+    test_df = (
+        split_df
+        .filter(col("split_rand") >= 0.8)
+        .drop("split_rand")
+        .persist(StorageLevel.MEMORY_AND_DISK)
+    )
 
-    train_df = base_df.join(train_ids_df, on="transaction_id", how="inner")
-    test_df = base_df.join(test_ids_df, on="transaction_id", how="inner")
+    train_count = train_df.count()
+    test_count = test_df.count()
+
+    print(f"Train rows: {train_count}", flush=True)
+    print(f"Test rows:  {test_count}", flush=True)
+
+    print("Train label distribution:", flush=True)
+    train_df.groupBy("label").count().orderBy("label").show(truncate=False)
+
+    print("Test label distribution:", flush=True)
+    test_df.groupBy("label").count().orderBy("label").show(truncate=False)
+
+    if train_count == 0 or test_count == 0:
+        raise RuntimeError("Train/test split produced empty dataset.")
+
+    log_elapsed("spark_train_test_split", step_start)
+
+    log_step("Building group features")
+    step_start = now_ts()
 
     train_features_df = train_df
     test_features_df = test_df
@@ -171,8 +251,11 @@ def main() -> None:
         ("customer_id", "customer"),
         ("card_id", "card"),
     ]:
+        print(f"Adding group features for {key_col} -> {prefix}", flush=True)
         train_features_df = add_group_features(train_features_df, train_df, key_col, prefix)
         test_features_df = add_group_features(test_features_df, train_df, key_col, prefix)
+
+    log_elapsed("build_group_features", step_start)
 
     fill_cols = [
         "merchant_txn_count",
@@ -205,11 +288,10 @@ def main() -> None:
                 "amount_to_merchant_avg",
                 when(col("merchant_avg_amount") > 0, col("amount") / col("merchant_avg_amount")).otherwise(lit(0.0))
             )
-            .withColumn("log_amount", when(col("amount") > 0, col("amount")).otherwise(lit(0.0)))
         )
 
-    train_features_df = finalize_features(train_features_df)
-    test_features_df = finalize_features(test_features_df)
+    train_features_df = finalize_features(train_features_df).persist(StorageLevel.MEMORY_AND_DISK)
+    test_features_df = finalize_features(test_features_df).persist(StorageLevel.MEMORY_AND_DISK)
 
     feature_columns = [
         "amount",
@@ -230,14 +312,25 @@ def main() -> None:
         "amount_to_merchant_avg",
     ]
 
+    log_step("Converting final feature frames to Pandas for sklearn")
+    step_start = now_ts()
+
     train_pd = train_features_df.select(*(feature_columns + ["label"])).toPandas()
     test_pd = test_features_df.select(*(feature_columns + ["label"])).toPandas()
+
+    print(f"train_pd shape: {train_pd.shape}", flush=True)
+    print(f"test_pd shape:  {test_pd.shape}", flush=True)
+
+    log_elapsed("to_pandas_final_features", step_start)
 
     x_train_raw = train_pd[feature_columns].astype("float64").to_numpy()
     y_train = train_pd["label"].astype("int32").to_numpy()
 
     x_test_raw = test_pd[feature_columns].astype("float64").to_numpy()
     y_test = test_pd["label"].astype("int32").to_numpy()
+
+    if len(np.unique(y_train)) < 2:
+        raise RuntimeError("Training labels contain only one class. Cannot train fraud model.")
 
     imputer = SimpleImputer(strategy="median")
     scaler = StandardScaler()
@@ -250,14 +343,19 @@ def main() -> None:
 
     model = LogisticRegression(
         class_weight="balanced",
-        max_iter=1000,
+        max_iter=300,
         solver="lbfgs",
         n_jobs=1,
         random_state=42,
+        tol=1e-4,
     )
 
-    print("Training LogisticRegression fraud scorecard...")
+    log_step("Training LogisticRegression fraud scorecard")
+    step_start = now_ts()
+
     model.fit(x_train_scaled, y_train)
+
+    log_elapsed("sklearn_logistic_regression_fit", step_start)
 
     probabilities = model.predict_proba(x_test_scaled)[:, 1]
 
@@ -267,10 +365,10 @@ def main() -> None:
     thresholds = [0.70, 0.50, 0.30, 0.20, 0.10, 0.05, 0.02, 0.01]
     threshold_metrics = evaluate_thresholds(y_test, probabilities, thresholds)
 
-    print(f"ROC_AUC={roc_auc}")
-    print(f"PR_AUC={pr_auc}")
-    print("Threshold metrics:")
-    print(json.dumps(threshold_metrics, indent=2))
+    print(f"ROC_AUC={roc_auc}", flush=True)
+    print(f"PR_AUC={pr_auc}", flush=True)
+    print("Threshold metrics:", flush=True)
+    print(json.dumps(threshold_metrics, indent=2), flush=True)
 
     imputer_medians = {
         feature_name: float(value)
@@ -299,6 +397,9 @@ def main() -> None:
         "model_type": "logistic_scorecard",
         "trained_at_utc": datetime.now(timezone.utc).isoformat(),
         "input_path": input_path,
+        "max_training_rows": max_training_rows,
+        "train_rows": int(len(train_pd)),
+        "test_rows": int(len(test_pd)),
         "feature_columns": feature_columns,
         "intercept": float(model.intercept_[0]),
         "weights": weights,
@@ -322,10 +423,12 @@ def main() -> None:
         with open(local_path, "w", encoding="utf-8") as f:
             json.dump(artifact, f, indent=2)
 
-        print(f"Uploading scorecard model to: {scorecard_s3_uri}")
+        print(f"Uploading scorecard model to: {scorecard_s3_uri}", flush=True)
         upload_file_to_s3(local_path, scorecard_s3_uri)
 
-    print("Scorecard training finished successfully.")
+    log_elapsed("total_training_job", total_start)
+
+    print("Scorecard training finished successfully.", flush=True)
     spark.stop()
 
 

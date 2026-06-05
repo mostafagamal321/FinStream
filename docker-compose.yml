@@ -339,7 +339,8 @@ services:
    FLINK_PROPERTIES: |
     jobmanager.rpc.address: flink-jobmanager
     jobmanager.memory.process.size: 768m
-    parallelism.default: 1
+    parallelism.default: 3
+    taskmanager.numberOfTaskSlots: 3
     state.backend: rocksdb
     metrics.reporters: prom
     metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
@@ -403,9 +404,9 @@ services:
 
    FLINK_PROPERTIES: |
     jobmanager.rpc.address: flink-jobmanager
-    taskmanager.numberOfTaskSlots: 1
+    taskmanager.numberOfTaskSlots: 3
     taskmanager.memory.process.size: 1024m
-    parallelism.default: 1
+    parallelism.default: 3
     state.backend: rocksdb
     state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink/checkpoints}
     metrics.reporters: prom
@@ -473,6 +474,7 @@ services:
   ports:
    - "7077:7077"
    - "8083:8080"
+   - "4040:4040"
   volumes:
    - ./spark/jobs:/opt/spark/jobs
    - ./spark/output:/opt/spark/output

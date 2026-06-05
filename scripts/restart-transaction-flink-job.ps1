@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 Write-Host "Checking existing Flink jobs..." -ForegroundColor Cyan
 
@@ -22,6 +22,6 @@ Start-Sleep -Seconds 8
 
 Write-Host "Submitting TransactionScoringJob..." -ForegroundColor Cyan
 
-docker exec -it finstream-flink-jobmanager flink run `
-    -c com.finstream.flink.TransactionScoringJob `
+docker exec -d finstream-flink-jobmanager flink run `
+    -d -c com.finstream.flink.TransactionScoringJob `
     /opt/flink/usrlib/finstream-flink-jobs.jar

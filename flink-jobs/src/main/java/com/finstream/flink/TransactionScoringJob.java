@@ -66,11 +66,10 @@ public class TransactionScoringJob {
         String inputTopic = getEnv("TOPIC_TRANSACTIONS_RAW", "transactions_raw");
         String consumerGroup = getEnv(
                 "FLINK_TRANSACTION_CONSUMER_GROUP",
-                "flink-transaction-baseline-v1"
-        );
+                "flink-transaction-baseline-v1");
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setParallelism(1);
+        env.setParallelism(3);
 
         configureCheckpointing(env);
 
@@ -85,48 +84,51 @@ public class TransactionScoringJob {
         DataStream<TransactionEvent> transactions = env.fromSource(
                 source,
                 WatermarkStrategy.noWatermarks(),
-                "transactions_raw_source"
-        );
+                "transactions_raw_source")
+                .setParallelism(3);
 
         int dedupTtlDays = Integer.parseInt(getEnv("FLINK_DEDUP_TTL_DAYS", "7"));
 
         DataStream<TransactionEvent> uniqueTransactions = transactions
                 .keyBy(event -> event.transactionId)
                 .process(new TransactionDeduplicationFunction(dedupTtlDays))
-                .name("deduplicate_by_transaction_id");
+                .name("deduplicate_by_transaction_id")
+                .setParallelism(3);
 
         boolean enableMlScorecard = Boolean.parseBoolean(
-                getEnv("ENABLE_ML_SCORECARD", "true")
-        );
+                getEnv("ENABLE_ML_SCORECARD", "true"));
 
         DataStream<ScoredTransaction> scoredTransactions;
 
         if (enableMlScorecard) {
             String modelScorecardUri = getEnv(
                     "MODEL_SCORECARD_S3_URI",
-                    "s3://finstream-silver-mostafa-dev/ml/models/fraud_scorecard/latest/model_scorecard.json"
-            );
+                    "s3://finstream-silver-mostafa-dev/ml/models/fraud_scorecard/latest/model_scorecard.json");
 
             scoredTransactions = uniqueTransactions
                     .map(new ScorecardScoringFunction(modelScorecardUri))
-                    .name("redis_feature_scorecard_ml_scoring");
+                    .name("redis_feature_scorecard_ml_scoring")
+                    .setParallelism(3);
 
             System.out.println("ML scorecard enabled. modelScorecardUri=" + modelScorecardUri);
         } else {
             scoredTransactions = uniqueTransactions
                     .map(new BaselineScoringFunction())
-                    .name("baseline_rule_scoring");
+                    .name("baseline_rule_scoring")
+                    .setParallelism(3);
 
             System.out.println("ML scorecard disabled. Using rule baseline only.");
         }
 
         scoredTransactions
                 .print()
-                .name("print_scored_transactions");
+                .name("print_scored_transactions")
+                .setParallelism(3);
 
         scoredTransactions
                 .addSink(createClickHouseSink())
-                .name("clickhouse_fraud_scores_rt_sink");
+                .name("clickhouse_fraud_scores_rt_sink")
+                .setParallelism(2);
 
         String s3ScoredPath = getEnv("S3_TRANSACTIONS_SCORED_PATH", "");
 
@@ -134,40 +136,43 @@ public class TransactionScoringJob {
             scoredTransactions
                     .map(new ScoredTransactionJsonMapper())
                     .name("scored_transaction_to_json")
+                    .setParallelism(3)
                     .sinkTo(createS3ScoredTransactionsSink(s3ScoredPath))
-                    .name("s3_transactions_scored_sink");
+                    .name("s3_transactions_scored_sink")
+                    .setParallelism(2);
 
             System.out.println("S3 scored transactions sink enabled. path=" + s3ScoredPath);
         } else {
             System.out.println("S3 scored transactions sink disabled. S3_TRANSACTIONS_SCORED_PATH is empty.");
         }
         boolean enableFraudAlertsSink = Boolean.parseBoolean(
-        getEnv("ENABLE_FRAUD_ALERTS_SINK", "true")
-);
+                getEnv("ENABLE_FRAUD_ALERTS_SINK", "true"));
 
-String fraudAlertsTopic = getEnv("TOPIC_FRAUD_ALERTS", "fraud_alerts");
+        String fraudAlertsTopic = getEnv("TOPIC_FRAUD_ALERTS", "fraud_alerts");
 
-if (enableFraudAlertsSink) {
-    scoredTransactions
-            .filter(TransactionScoringJob::isFraudAlert)
-            .name("filter_high_risk_fraud_alerts")
-            .map(new FraudAlertJsonMapper())
-            .name("fraud_alert_to_json")
-            .sinkTo(createFraudAlertsSink(kafkaBootstrapServers, fraudAlertsTopic))
-            .name("kafka_fraud_alerts_sink");
+        if (enableFraudAlertsSink) {
+            scoredTransactions
+                    .filter(TransactionScoringJob::isFraudAlert)
+                    .name("filter_high_risk_fraud_alerts")
+                    .setParallelism(3)
+                    .map(new FraudAlertJsonMapper())
+                    .name("fraud_alert_to_json")
+                    .setParallelism(3)
+                    .sinkTo(createFraudAlertsSink(kafkaBootstrapServers, fraudAlertsTopic))
+                    .name("kafka_fraud_alerts_sink")
+                    .setParallelism(2);
 
-    System.out.println("Kafka fraud alerts sink enabled. topic=" + fraudAlertsTopic);
-} else {
-    System.out.println("Kafka fraud alerts sink disabled. ENABLE_FRAUD_ALERTS_SINK=false.");
-}
+            System.out.println("Kafka fraud alerts sink enabled. topic=" + fraudAlertsTopic);
+        } else {
+            System.out.println("Kafka fraud alerts sink disabled. ENABLE_FRAUD_ALERTS_SINK=false.");
+        }
 
         env.execute("FinStream Transaction Baseline Scoring Job");
     }
 
     private static void configureCheckpointing(StreamExecutionEnvironment env) {
         boolean enableCheckpoints = Boolean.parseBoolean(
-                getEnv("ENABLE_FLINK_CHECKPOINTS", "false")
-        );
+                getEnv("ENABLE_FLINK_CHECKPOINTS", "false"));
 
         if (!enableCheckpoints) {
             System.out.println("Flink checkpointing disabled for baseline validation.");
@@ -178,8 +183,7 @@ if (enableFraudAlertsSink) {
 
         String checkpointDir = getEnv(
                 "FLINK_CHECKPOINT_DIR",
-                "file:///tmp/finstream-flink-checkpoints"
-        );
+                "file:///tmp/finstream-flink-checkpoints");
 
         env.getCheckpointConfig().setCheckpointStorage(checkpointDir);
 
@@ -209,8 +213,7 @@ if (enableFraudAlertsSink) {
     private static SinkFunction<ScoredTransaction> createClickHouseSink() {
         String clickHouseUrl = getEnv(
                 "CLICKHOUSE_JDBC_URL",
-                "jdbc:clickhouse://clickhouse:8123/finstream"
-        );
+                "jdbc:clickhouse://clickhouse:8123/finstream");
 
         String clickHouseUser = getEnv("CLICKHOUSE_USER", "default");
         String clickHousePassword = getEnv("CLICKHOUSE_PASSWORD", "");
@@ -255,14 +258,12 @@ if (enableFraudAlertsSink) {
                         .withDriverName("com.clickhouse.jdbc.ClickHouseDriver")
                         .withUsername(clickHouseUser)
                         .withPassword(clickHousePassword)
-                        .build()
-        );
+                        .build());
     }
 
     private static void bindScoredTransaction(
             PreparedStatement statement,
-            ScoredTransaction scored
-    ) throws SQLException {
+            ScoredTransaction scored) throws SQLException {
         statement.setString(1, scored.eventTime);
         statement.setTimestamp(2, Timestamp.from(Instant.parse(scored.scoredAt)));
 
@@ -309,16 +310,14 @@ if (enableFraudAlertsSink) {
         return FileSink
                 .forRowFormat(
                         new Path(s3OutputPath),
-                        new SimpleStringEncoder<String>("UTF-8")
-                )
+                        new SimpleStringEncoder<String>("UTF-8"))
                 .withBucketAssigner(new DateTimeBucketAssigner<>("yyyy-MM-dd/HH"))
                 .withRollingPolicy(
                         DefaultRollingPolicy.builder()
                                 .withRolloverInterval(Duration.ofMinutes(5))
                                 .withInactivityInterval(Duration.ofMinutes(2))
                                 .withMaxPartSize(MemorySize.ofMebiBytes(128))
-                                .build()
-                )
+                                .build())
                 .build();
     }
 
@@ -423,8 +422,7 @@ if (enableFraudAlertsSink) {
                     .cleanupFullSnapshot()
                     .build();
 
-            ValueStateDescriptor<Boolean> descriptor =
-                    new ValueStateDescriptor<>("seen_transaction_id", Boolean.class);
+            ValueStateDescriptor<Boolean> descriptor = new ValueStateDescriptor<>("seen_transaction_id", Boolean.class);
 
             descriptor.enableTimeToLive(ttlConfig);
 
@@ -437,8 +435,7 @@ if (enableFraudAlertsSink) {
         public void processElement(
                 TransactionEvent event,
                 Context context,
-                Collector<TransactionEvent> out
-        ) throws Exception {
+                Collector<TransactionEvent> out) throws Exception {
             if (event.transactionId == null || event.transactionId.isBlank()) {
                 return;
             }
@@ -452,102 +449,100 @@ if (enableFraudAlertsSink) {
         }
     }
 
-private static boolean isFraudAlert(ScoredTransaction scored) {
-    return "HIGH".equalsIgnoreCase(scored.riskLevel)
-            || "BLOCK".equalsIgnoreCase(scored.decision);
-}
-
-private static KafkaSink<String> createFraudAlertsSink(
-        String kafkaBootstrapServers,
-        String fraudAlertsTopic
-) {
-    return KafkaSink.<String>builder()
-            .setBootstrapServers(kafkaBootstrapServers)
-            .setRecordSerializer(
-                    KafkaRecordSerializationSchema.builder()
-                            .setTopic(fraudAlertsTopic)
-                            .setValueSerializationSchema(new SimpleStringSchema())
-                            .build()
-            )
-            .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
-            .build();
-}
-
-public static class FraudAlertJsonMapper
-        implements MapFunction<ScoredTransaction, String> {
-
-    @Override
-    public String map(ScoredTransaction scored) {
-        return "{"
-                + "\"alert_type\":\"FRAUD_RISK_ALERT\","
-                + "\"transaction_id\":\"" + escapeJson(scored.transactionId) + "\","
-                + "\"customer_id\":\"" + escapeJson(scored.customerId) + "\","
-                + "\"card_id\":\"" + escapeJson(scored.cardId) + "\","
-                + "\"merchant_id\":\"" + escapeJson(scored.merchantId) + "\","
-                + "\"event_time\":\"" + escapeJson(scored.eventTime) + "\","
-                + "\"scored_at\":\"" + escapeJson(scored.scoredAt) + "\","
-                + "\"amount\":" + scored.amount + ","
-                + "\"currency\":\"" + escapeJson(scored.currency) + "\","
-                + "\"fraud_score\":" + scored.fraudScore + ","
-                + "\"risk_level\":\"" + escapeJson(scored.riskLevel) + "\","
-                + "\"decision\":\"" + escapeJson(scored.decision) + "\","
-                + "\"reason_codes\":\"" + escapeJson(String.join(",", scored.reasonCodes)) + "\","
-                + "\"scoring_method\":\"" + escapeJson(scored.scoringMethod) + "\","
-                + "\"actual_is_fraud\":" + nullableInteger(scored.actualIsFraud) + ","
-                + "\"source_topic\":\"" + escapeJson(scored.kafkaTopic) + "\","
-                + "\"source_partition\":" + scored.kafkaPartition + ","
-                + "\"source_offset\":" + scored.kafkaOffset
-                + "}";
+    private static boolean isFraudAlert(ScoredTransaction scored) {
+        return "HIGH".equalsIgnoreCase(scored.riskLevel)
+                || "BLOCK".equalsIgnoreCase(scored.decision);
     }
 
-    private static String nullableInteger(Integer value) {
-        return value == null ? "null" : value.toString();
+    private static KafkaSink<String> createFraudAlertsSink(
+            String kafkaBootstrapServers,
+            String fraudAlertsTopic) {
+        return KafkaSink.<String>builder()
+                .setBootstrapServers(kafkaBootstrapServers)
+                .setRecordSerializer(
+                        KafkaRecordSerializationSchema.builder()
+                                .setTopic(fraudAlertsTopic)
+                                .setValueSerializationSchema(new SimpleStringSchema())
+                                .build())
+                .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+                .build();
     }
 
-    private static String escapeJson(String value) {
-        if (value == null) {
-            return "";
+    public static class FraudAlertJsonMapper
+            implements MapFunction<ScoredTransaction, String> {
+
+        @Override
+        public String map(ScoredTransaction scored) {
+            return "{"
+                    + "\"alert_type\":\"FRAUD_RISK_ALERT\","
+                    + "\"transaction_id\":\"" + escapeJson(scored.transactionId) + "\","
+                    + "\"customer_id\":\"" + escapeJson(scored.customerId) + "\","
+                    + "\"card_id\":\"" + escapeJson(scored.cardId) + "\","
+                    + "\"merchant_id\":\"" + escapeJson(scored.merchantId) + "\","
+                    + "\"event_time\":\"" + escapeJson(scored.eventTime) + "\","
+                    + "\"scored_at\":\"" + escapeJson(scored.scoredAt) + "\","
+                    + "\"amount\":" + scored.amount + ","
+                    + "\"currency\":\"" + escapeJson(scored.currency) + "\","
+                    + "\"fraud_score\":" + scored.fraudScore + ","
+                    + "\"risk_level\":\"" + escapeJson(scored.riskLevel) + "\","
+                    + "\"decision\":\"" + escapeJson(scored.decision) + "\","
+                    + "\"reason_codes\":\"" + escapeJson(String.join(",", scored.reasonCodes)) + "\","
+                    + "\"scoring_method\":\"" + escapeJson(scored.scoringMethod) + "\","
+                    + "\"actual_is_fraud\":" + nullableInteger(scored.actualIsFraud) + ","
+                    + "\"source_topic\":\"" + escapeJson(scored.kafkaTopic) + "\","
+                    + "\"source_partition\":" + scored.kafkaPartition + ","
+                    + "\"source_offset\":" + scored.kafkaOffset
+                    + "}";
         }
 
-        StringBuilder escaped = new StringBuilder();
+        private static String nullableInteger(Integer value) {
+            return value == null ? "null" : value.toString();
+        }
 
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-
-            switch (c) {
-                case '"':
-                    escaped.append("\\\"");
-                    break;
-                case '\\':
-                    escaped.append("\\\\");
-                    break;
-                case '\b':
-                    escaped.append("\\b");
-                    break;
-                case '\f':
-                    escaped.append("\\f");
-                    break;
-                case '\n':
-                    escaped.append("\\n");
-                    break;
-                case '\r':
-                    escaped.append("\\r");
-                    break;
-                case '\t':
-                    escaped.append("\\t");
-                    break;
-                default:
-                    if (c < 0x20) {
-                        escaped.append(String.format("\\u%04x", (int) c));
-                    } else {
-                        escaped.append(c);
-                    }
+        private static String escapeJson(String value) {
+            if (value == null) {
+                return "";
             }
-        }
 
-        return escaped.toString();
+            StringBuilder escaped = new StringBuilder();
+
+            for (int i = 0; i < value.length(); i++) {
+                char c = value.charAt(i);
+
+                switch (c) {
+                    case '"':
+                        escaped.append("\\\"");
+                        break;
+                    case '\\':
+                        escaped.append("\\\\");
+                        break;
+                    case '\b':
+                        escaped.append("\\b");
+                        break;
+                    case '\f':
+                        escaped.append("\\f");
+                        break;
+                    case '\n':
+                        escaped.append("\\n");
+                        break;
+                    case '\r':
+                        escaped.append("\\r");
+                        break;
+                    case '\t':
+                        escaped.append("\\t");
+                        break;
+                    default:
+                        if (c < 0x20) {
+                            escaped.append(String.format("\\u%04x", (int) c));
+                        } else {
+                            escaped.append(c);
+                        }
+                }
+            }
+
+            return escaped.toString();
+        }
     }
-}
 
     public static class TransactionAvroDeserializationSchema
             implements KafkaRecordDeserializationSchema<TransactionEvent> {
@@ -562,18 +557,15 @@ public static class FraudAlertJsonMapper
         @Override
         public void deserialize(
                 ConsumerRecord<byte[], byte[]> record,
-                Collector<TransactionEvent> out
-        ) {
+                Collector<TransactionEvent> out) {
             if (deserializer == null) {
                 Properties properties = new Properties();
                 properties.put(
                         ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
-                        ByteArrayDeserializer.class.getName()
-                );
+                        ByteArrayDeserializer.class.getName());
                 properties.put(
                         ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
-                        KafkaAvroDeserializer.class.getName()
-                );
+                        KafkaAvroDeserializer.class.getName());
                 properties.put("schema.registry.url", schemaRegistryUrl);
                 properties.put("specific.avro.reader", "false");
 
@@ -726,8 +718,7 @@ public static class FraudAlertJsonMapper
                     poolConfig,
                     redisHost,
                     redisPort,
-                    redisTimeoutMs
-            );
+                    redisTimeoutMs);
 
             try (Jedis jedis = jedisPool.getResource()) {
                 jedis.ping();
@@ -739,8 +730,7 @@ public static class FraudAlertJsonMapper
                             + ", reviewThreshold="
                             + scorecardModel.reviewThreshold
                             + ", blockThreshold="
-                            + scorecardModel.blockThreshold
-            );
+                            + scorecardModel.blockThreshold);
         }
 
         @Override
@@ -853,7 +843,8 @@ public static class FraudAlertJsonMapper
         }
 
         private static double safeRatio(double numerator, double denominator) {
-            if (denominator <= 0.0) return 0.0;
+            if (denominator <= 0.0)
+                return 0.0;
             return numerator / denominator;
         }
 
@@ -907,8 +898,7 @@ public static class FraudAlertJsonMapper
             for (String featureName : featureColumns) {
                 double rawValue = rawFeatures.getOrDefault(
                         featureName,
-                        imputerMedians.getOrDefault(featureName, 0.0)
-                );
+                        imputerMedians.getOrDefault(featureName, 0.0));
 
                 if (Double.isNaN(rawValue) || Double.isInfinite(rawValue)) {
                     rawValue = imputerMedians.getOrDefault(featureName, 0.0);
@@ -947,7 +937,7 @@ public static class FraudAlertJsonMapper
         private static String readTextFromPath(String uri) throws Exception {
             Path path = new Path(uri);
             try (FSDataInputStream inputStream = path.getFileSystem().open(path);
-                 ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
+                    ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
                 byte[] data = new byte[8192];
                 int bytesRead;
                 while ((bytesRead = inputStream.read(data)) != -1) {

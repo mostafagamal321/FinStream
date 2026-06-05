@@ -1,135 +1,213 @@
 import argparse
+import os
 import time
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
-from src.producers.config import (
-    KAFKA_BOOTSTRAP_SERVERS,
-    SCHEMA_REGISTRY_URL,
-    TEST_IDENTITY_PATH,
-    TEST_TRANSACTION_PATH,
-    TOPIC_TRANSACTIONS_RAW,
-    TRAIN_IDENTITY_PATH,
-    TRAIN_TRANSACTION_PATH,
-    TRANSACTION_SCHEMA_PATH,
+from src.producers.producer_utils import (
+    create_avro_producer,
+    delivery_report,
+    new_event_id,
+    utc_now_iso,
 )
-from src.producers.producer_utils import create_avro_producer, delivery_report
-from src.producers.transaction_mapper import map_ieee_row_to_transaction_event
 
 
-def validate_file_exists(path: Path) -> None:
-    if not path.exists():
-        raise FileNotFoundError(f"Required file not found: {path}")
+def get_env(name: str, default: str) -> str:
+    return os.getenv(name, default)
 
 
-def get_paths(split: str) -> tuple[Path, Path]:
+def normalize_value(value):
+    if pd.isna(value):
+        return None
+
+    if hasattr(value, "item"):
+        return value.item()
+
+    return value
+
+
+def to_nullable_string(value):
+    value = normalize_value(value)
+    if value is None:
+        return None
+    return str(value)
+
+
+def to_required_string(value, default: str) -> str:
+    value = normalize_value(value)
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value)
+
+
+def to_nullable_double(value):
+    value = normalize_value(value)
+    if value is None:
+        return None
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def to_required_double(value, default: float = 0.0) -> float:
+    parsed = to_nullable_double(value)
+    if parsed is None:
+        return default
+    return parsed
+
+
+def to_required_long(value, default: int = 0) -> int:
+    value = normalize_value(value)
+    if value is None:
+        return default
+
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def to_nullable_int(value):
+    value = normalize_value(value)
+    if value is None:
+        return None
+
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def build_card_id(row: pd.Series, transaction_id: str) -> str:
+    card_parts = [
+        normalize_value(row.get("card1")),
+        normalize_value(row.get("card2")),
+        normalize_value(row.get("card3")),
+        normalize_value(row.get("card4")),
+        normalize_value(row.get("card5")),
+        normalize_value(row.get("card6")),
+    ]
+
+    usable_parts = [str(part) for part in card_parts if part is not None]
+
+    if not usable_parts:
+        return f"card_unknown_{transaction_id}"
+
+    return "card_" + "_".join(usable_parts)
+
+
+def build_customer_id(row: pd.Series, transaction_id: str) -> str:
+    # IEEE-CIS identity fields are not always present for every transaction.
+    identity_value = normalize_value(row.get("id_01"))
+
+    if identity_value is not None:
+        return f"cust_{identity_value}"
+
+    # Stable fallback so every transaction has a customer_id.
+    return f"cust_{transaction_id}"
+
+
+def build_merchant_id(row: pd.Series) -> str:
+    addr1 = normalize_value(row.get("addr1"))
+
+    if addr1 is not None:
+        return f"merch_{addr1}"
+
+    return "merch_unknown"
+
+
+def build_transaction_event(row: pd.Series, split: str) -> dict:
+    transaction_id = to_required_string(row.get("TransactionID"), "unknown_transaction")
+
+    now_iso = utc_now_iso()
+
+    event = {
+        "event_id": new_event_id(),
+        "transaction_id": transaction_id,
+
+        "event_time": now_iso,
+        "ingestion_time": now_iso,
+        "source": "ieee_cis",
+
+        "split": split,
+        "transaction_dt": to_required_long(row.get("TransactionDT"), 0),
+
+        "amount": to_required_double(row.get("TransactionAmt"), 0.0),
+        "currency": "USD",
+        "product_cd": to_nullable_string(row.get("ProductCD")),
+
+        "customer_id": build_customer_id(row, transaction_id),
+        "card_id": build_card_id(row, transaction_id),
+        "merchant_id": build_merchant_id(row),
+
+        "card_brand": to_nullable_string(row.get("card4")),
+        "card_type": to_nullable_string(row.get("card6")),
+        "addr1": to_nullable_double(row.get("addr1")),
+        "addr2": to_nullable_double(row.get("addr2")),
+
+        "payer_email_domain": to_nullable_string(row.get("P_emaildomain")),
+        "receiver_email_domain": to_nullable_string(row.get("R_emaildomain")),
+
+        "device_type": to_nullable_string(row.get("DeviceType")),
+        "device_info": to_nullable_string(row.get("DeviceInfo")),
+
+        "is_fraud": to_nullable_int(row.get("isFraud")),
+    }
+
+    return event
+
+
+def load_paths(split: str) -> tuple[Path, Path | None]:
+    base_dir = Path("data/raw/ieee_fraud")
+
     if split == "train":
-        return TRAIN_TRANSACTION_PATH, TRAIN_IDENTITY_PATH
+        transaction_path = base_dir / "train_transaction.csv"
+        identity_path = base_dir / "train_identity.csv"
+    else:
+        transaction_path = base_dir / "test_transaction.csv"
+        identity_path = base_dir / "test_identity.csv"
 
-    if split == "test":
-        return TEST_TRANSACTION_PATH, TEST_IDENTITY_PATH
+    if not transaction_path.exists():
+        raise FileNotFoundError(f"Transaction file not found: {transaction_path}")
 
-    raise ValueError("split must be either 'train' or 'test'")
+    if not identity_path.exists():
+        identity_path = None
 
-
-def load_identity_data(identity_path: Path) -> pd.DataFrame:
-    validate_file_exists(identity_path)
-
-    identity = pd.read_csv(identity_path)
-
-    if "TransactionID" not in identity.columns:
-        raise ValueError(f"TransactionID column not found in {identity_path}")
-
-    return identity
+    return transaction_path, identity_path
 
 
-def replay_transactions(
-    split: str,
-    rate: int,
-    limit: Optional[int],
-    chunk_size: int,
-) -> None:
-    if rate <= 0:
-        raise ValueError("rate must be greater than zero")
-
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be greater than zero")
-
-    transaction_path, identity_path = get_paths(split)
-
-    validate_file_exists(transaction_path)
-    validate_file_exists(identity_path)
-
-    identity = load_identity_data(identity_path)
-
-    producer = create_avro_producer(
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        schema_registry_url=SCHEMA_REGISTRY_URL,
-        schema_path=TRANSACTION_SCHEMA_PATH,
+def resolve_schema_path() -> Path:
+    configured = get_env(
+        "TRANSACTION_SCHEMA_PATH",
+        "schemas/transaction/transaction_event.avsc",
     )
 
-    sleep_seconds = 1 / rate
-    produced_count = 0
+    schema_path = Path(configured)
 
-    print(f"Reading transactions from: {transaction_path}")
-    print(f"Reading identity from: {identity_path}")
-    print(f"Publishing to Kafka topic: {TOPIC_TRANSACTIONS_RAW}")
-    print(f"Split: {split}")
-    print(f"Rate: {rate} events/second")
-    print(f"Chunk size: {chunk_size}")
-    print(f"Limit: {limit if limit is not None else 'no limit'}")
+    if schema_path.exists():
+        return schema_path
 
-    for chunk in pd.read_csv(transaction_path, chunksize=chunk_size):
-        if limit is not None:
-            remaining = limit - produced_count
-            if remaining <= 0:
-                break
+    fallback_candidates = [
+        Path("schemas/transaction/transaction_event.avsc"),
+        Path("schemas/transactions.avsc"),
+        Path("schemas/transaction.avsc"),
+    ]
 
-            chunk = chunk.head(remaining)
+    for candidate in fallback_candidates:
+        if candidate.exists():
+            return candidate
 
-        merged = chunk.merge(
-            identity,
-            on="TransactionID",
-            how="left",
-        )
+    raise FileNotFoundError(
+        "Could not find transaction Avro schema. "
+        "Set TRANSACTION_SCHEMA_PATH in .env or rename schema to schemas/transactions_event.avsc"
+    )
 
-        for _, row in merged.iterrows():
-            event = map_ieee_row_to_transaction_event(
-                row=row.to_dict(),
-                split=split,
-            )
-
-            producer.produce(
-                topic=TOPIC_TRANSACTIONS_RAW,
-                key=event["transaction_id"],
-                value=event,
-                on_delivery=delivery_report,
-            )
-
-            producer.poll(0)
-            produced_count += 1
-
-            if produced_count % 1000 == 0:
-                print(f"Produced {produced_count} events")
-
-            time.sleep(sleep_seconds)
-
-            if limit is not None and produced_count >= limit:
-                break
-
-        producer.flush()
-
-        if limit is not None and produced_count >= limit:
-            break
-
-    print(f"Finished publishing {produced_count} transaction events.")
-
-
-def parse_args() -> argparse.Namespace:
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Replay IEEE-CIS transaction CSV rows into Kafka."
+        description="Replay IEEE-CIS transaction CSV rows into Kafka using Avro + Schema Registry."
     )
 
     parser.add_argument(
@@ -141,9 +219,9 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--rate",
-        type=int,
-        default=10,
-        help="Events per second.",
+        type=float,
+        default=10.0,
+        help="Events per second. Use 0 for no sleep.",
     )
 
     parser.add_argument(
@@ -160,19 +238,111 @@ def parse_args() -> argparse.Namespace:
         help="Number of CSV rows to read per chunk.",
     )
 
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-
-    replay_transactions(
-        split=args.split,
-        rate=args.rate,
-        limit=args.limit,
-        chunk_size=args.chunk_size,
+    parser.add_argument(
+        "--start-row",
+        type=int,
+        default=0,
+        help="Number of rows to skip before publishing.",
     )
 
+    args = parser.parse_args()
+
+    if args.start_row < 0:
+        raise ValueError("--start-row must be >= 0")
+
+    if args.limit is not None and args.limit < 0:
+        raise ValueError("--limit must be >= 0")
+
+    topic = get_env("TOPIC_TRANSACTIONS_RAW", "transactions_raw")
+    bootstrap_servers = get_env("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092")
+    schema_registry_url = get_env("SCHEMA_REGISTRY_URL", "http://localhost:8081")
+    schema_path = resolve_schema_path()
+
+    transaction_path, identity_path = load_paths(args.split)
+
+    print(f"Reading transactions from: {transaction_path}")
+
+    if identity_path is not None:
+        print(f"Reading identity from: {identity_path}")
+    else:
+        print("Identity file not found. Continuing without identity join.")
+
+    print(f"Publishing to Kafka topic: {topic}")
+    print(f"Bootstrap servers: {bootstrap_servers}")
+    print(f"Schema Registry URL: {schema_registry_url}")
+    print(f"Schema path: {schema_path}")
+    print(f"Split: {args.split}")
+    print(f"Rate: {args.rate} events/second")
+    print(f"Chunk size: {args.chunk_size}")
+    print(f"Start row: {args.start_row}")
+    print(f"Limit: {args.limit if args.limit is not None else 'ALL'}")
+
+    identity_df = None
+
+    if identity_path is not None:
+        identity_df = pd.read_csv(identity_path)
+        identity_df = identity_df.set_index("TransactionID")
+
+    producer = create_avro_producer(
+        bootstrap_servers=bootstrap_servers,
+        schema_registry_url=schema_registry_url,
+        schema_path=schema_path,
+    )
+
+    sleep_seconds = 0.0
+    if args.rate and args.rate > 0:
+        sleep_seconds = 1.0 / args.rate
+
+    published = 0
+    absolute_row_index = 0
+
+    for chunk in pd.read_csv(transaction_path, chunksize=args.chunk_size):
+        chunk_start = absolute_row_index
+        chunk_end = absolute_row_index + len(chunk)
+        absolute_row_index = chunk_end
+
+        if chunk_end <= args.start_row:
+            continue
+
+        if chunk_start < args.start_row:
+            rows_to_skip_inside_chunk = args.start_row - chunk_start
+            chunk = chunk.iloc[rows_to_skip_inside_chunk:]
+
+        if args.limit is not None:
+            remaining = args.limit - published
+            if remaining <= 0:
+                break
+
+            chunk = chunk.iloc[:remaining]
+
+        if identity_df is not None:
+            chunk = chunk.join(identity_df, on="TransactionID", how="left", rsuffix="_identity")
+
+        for _, row in chunk.iterrows():
+            event = build_transaction_event(row, args.split)
+
+            producer.produce(
+                topic=topic,
+                key=event["transaction_id"],
+                value=event,
+                on_delivery=delivery_report,
+            )
+
+            producer.poll(0)
+            published += 1
+
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
+            if args.limit is not None and published >= args.limit:
+                break
+
+        producer.flush()
+
+        if args.limit is not None and published >= args.limit:
+            break
+
+    print(f"Finished publishing {published} transaction events.")
 
 if __name__ == "__main__":
     main()
