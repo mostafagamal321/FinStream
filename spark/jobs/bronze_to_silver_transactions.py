@@ -232,6 +232,7 @@ def write_silver(df, silver_target):
 
     (
         silver_final
+        .coalesce(4) 
         .write
         .mode("overwrite")
         .option("partitionOverwriteMode", "dynamic")
