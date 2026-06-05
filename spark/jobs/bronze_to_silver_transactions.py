@@ -57,13 +57,19 @@ def create_spark_session():
     spark = (
         SparkSession.builder
         .appName("finstream-bronze-to-silver-transactions")
-        .config("spark.jars.packages",                    "org.apache.hadoop:hadoop-aws:3.3.4")
-        .config("spark.hadoop.fs.s3a.impl",               "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.access.key",         aws_key)
-        .config("spark.hadoop.fs.s3a.secret.key",         aws_secret)
-        .config("spark.hadoop.fs.s3a.endpoint",           "s3.amazonaws.com")
-        .config("spark.hadoop.fs.s3a.path.style.access",  "false")
-        .config("spark.sql.shuffle.partitions",           "8")
+        # 
+        .config("spark.driver.memory",                 "4g")
+        .config("spark.driver.maxResultSize",          "2g")
+        .config("spark.memory.fraction",               "0.8")
+        .config("spark.memory.storageFraction",        "0.3")
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+        .config("spark.jars.packages",                 "org.apache.hadoop:hadoop-aws:3.3.4")
+        .config("spark.hadoop.fs.s3a.impl",            "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.hadoop.fs.s3a.access.key",      aws_key)
+        .config("spark.hadoop.fs.s3a.secret.key",      aws_secret)
+        .config("spark.hadoop.fs.s3a.endpoint",        "s3.amazonaws.com")
+        .config("spark.hadoop.fs.s3a.path.style.access", "false")
+        .config("spark.sql.shuffle.partitions",        "16")  # زودتها من 8 لـ 16 عشان الـ Shuffle
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .getOrCreate()
     )
