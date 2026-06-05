@@ -104,7 +104,12 @@ Current completed work:
 - Added support for simulating historical CSV data as streaming events.
 ---
 
+
 ## 1.Market & news pipline setup: 
+#### Check docker compose file before starting:
+```
+docker compose config
+```
 #### Start the core services:
 ```bash
 docker compose up -d kafka schema-registry
