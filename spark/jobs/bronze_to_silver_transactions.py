@@ -1,19 +1,3 @@
-"""
-FinStream — Bronze to Silver Transactions
-==========================================
-Owner   : Saleh (E3)
-Source  : s3a://<bronze-bucket>/bronze/transactions_raw/
-Target  : s3a://<silver-bucket>/silver/transactions/
-
-Run:
-    spark-submit \
-        --packages org.apache.hadoop:hadoop-aws:3.3.4 \
-        spark/jobs/bronze_to_silver_transactions.py
-
-    # Single partition (dev/test):
-    spark-submit ... bronze_to_silver_transactions.py --date 2020-01-02
-"""
-
 import os
 import sys
 import datetime
@@ -24,17 +8,15 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-# ── Logging ──────────────────────────────────────────────────────────────────
+# Logging 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger("bronze_to_silver_transactions")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 # 1. Args
-# ─────────────────────────────────────────────────────────────────────────────
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Bronze → Silver Transactions")
     parser.add_argument(
@@ -57,19 +39,19 @@ def create_spark_session():
     spark = (
         SparkSession.builder
         .appName("finstream-bronze-to-silver-transactions")
-        # 
+        # Driver Configuration
         .config("spark.driver.memory",                 "4g")
         .config("spark.driver.maxResultSize",          "2g")
         .config("spark.memory.fraction",               "0.8")
         .config("spark.memory.storageFraction",        "0.3")
-        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+        # S3 Configuration
         .config("spark.jars.packages",                 "org.apache.hadoop:hadoop-aws:3.3.4")
         .config("spark.hadoop.fs.s3a.impl",            "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.access.key",      aws_key)
         .config("spark.hadoop.fs.s3a.secret.key",      aws_secret)
         .config("spark.hadoop.fs.s3a.endpoint",        "s3.amazonaws.com")
         .config("spark.hadoop.fs.s3a.path.style.access", "false")
-        .config("spark.sql.shuffle.partitions",        "16")  # زودتها من 8 لـ 16 عشان الـ Shuffle
+        .config("spark.sql.shuffle.partitions",        "16")  
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .getOrCreate()
     )

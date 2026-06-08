@@ -8,32 +8,32 @@ from pyspark.sql import functions as F
 import clickhouse_connect
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("silver_to_clickhouse_transactions")
+log = logging.getLogger("silver_to_clickhouse_market_news")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Silver Transactions → ClickHouse (Incremental)")
-    parser.add_argument("--date",        type=str, default=None,  help="Force single date YYYY-MM-DD")
-    parser.add_argument("--full-reload", action="store_true",     help="Reload everything from S3 Silver")
+    parser = argparse.ArgumentParser(description="Silver Market News → ClickHouse (Incremental)")
+    parser.add_argument("--date",        type=str, default=None, help="Force single date YYYY-MM-DD")
+    parser.add_argument("--full-reload", action="store_true",    help="Reload everything from S3 Silver")
     return parser.parse_args()
 
 
 def get_config():
     return {
         "silver_bucket" : os.environ.get("FINSTREAM_SILVER_BUCKET", "finstream-silver-mostafa-dev"),
-        "ch_host"       : os.environ.get("CLICKHOUSE_HOST",         "localhost"),
+        "ch_host": os.environ.get("CLICKHOUSE_HOST", "clickhouse"),
         "ch_user"       : os.environ.get("CLICKHOUSE_USER",         "finstream"),
         "ch_password"   : os.environ.get("CLICKHOUSE_PASSWORD",     "finstream123"),
-        "ch_db"         : os.environ.get("CLICKHOUSE_DB",           "finstream"),
-        "ch_table"      : "silver_transactions",
+       "ch_db": os.environ.get("CLICKHOUSE_DB", "finstream"), 
+        "ch_table"      : "silver_market_news",
     }
 
 
 def create_spark_session():
     spark = (
         SparkSession.builder
-        .appName("finstream-silver-to-clickhouse-incremental")
-        .config("spark.jars.packages",                   "org.apache.hadoop:hadoop-aws:3.3.4")
+        .appName("finstream-silver-to-clickhouse-market-news")
+        .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.clickhouse:clickhouse-jdbc:0.6.0")
         .config("spark.hadoop.fs.s3a.impl",              "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.access.key",        os.environ["AWS_ACCESS_KEY_ID"])
         .config("spark.hadoop.fs.s3a.secret.key",        os.environ["AWS_SECRET_ACCESS_KEY"])
@@ -54,7 +54,7 @@ def get_last_loaded_date(cfg):
             username=cfg["ch_user"], password=cfg["ch_password"],
             database=cfg["ch_db"],
         )
-        result    = client.query(f"SELECT max(event_day) FROM {cfg['ch_table']}")
+        result    = client.query(f"SELECT max(dt) FROM {cfg['ch_table']}")
         last_date = result.first_row[0]
         client.close()
 
@@ -80,9 +80,9 @@ def get_s3_partitions(spark, silver_root):
         statuses = fs.listStatus(jvm.org.apache.hadoop.fs.Path(silver_root))
 
         partitions = sorted([
-            s.getPath().getName().replace("event_day=", "")
+            s.getPath().getName().replace("dt=", "")
             for s in statuses
-            if s.getPath().getName().startswith("event_day=")
+            if s.getPath().getName().startswith("dt=")
         ])
 
         log.info("Found %s partitions in S3 Silver", len(partitions))
@@ -109,7 +109,7 @@ def get_partitions_to_load(all_partitions, last_loaded_date, full_reload):
 
 
 def read_silver_partitions(spark, silver_root, partitions):
-    paths = [f"{silver_root}event_day={p}/" for p in partitions]
+    paths = [f"{silver_root}dt={p}/" for p in partitions]
     log.info("Reading %s partition(s)...", len(paths))
     df    = spark.read.option("mergeSchema", "true").parquet(*paths)
     count = df.count()
@@ -118,25 +118,20 @@ def read_silver_partitions(spark, silver_root, partitions):
 
 
 def prepare_for_clickhouse(df):
-    if "event_day" not in df.columns:
-        df = df.withColumn("event_day", F.to_date("event_ts"))
+    if "dt" not in df.columns:
+        df = df.withColumn("dt", F.current_date())
+    else:
+        df = df.withColumn("dt", F.to_date("dt"))
+
     return df.select(
-        "transaction_id", "customer_id", "card_id", "merchant_id",
-        "amount", "currency", "amount_band", "is_high_amount",
-        "card_brand", "card_type", "addr1", "addr2",
-        "device_type", "device_info", "has_device_info",
-        "payer_email_domain", "receiver_email_domain", "email_domain_type",
-        "product_cd", "is_fraud",
-        "event_ts", "ingestion_ts", "s3_ingestion_ts",
-        "event_day", "event_hour", "processing_lag_seconds",
-        "silver_processed_at", "silver_version",
+        "event_id", "event_time", "published_at", "source_name",
+        "author", "title", "description", "url", "symbol_query",
+        "source", "company", "sentiment", "sentiment_score", "dt",
     )
 
 
 def write_to_clickhouse(df, cfg, total_count):
-    ch_url = f"jdbc:clickhouse://{cfg['ch_host']}:8123/{cfg['ch_db']}"
-
-    
+    ch_url         = f"jdbc:clickhouse://{cfg['ch_host']}:8123/{cfg['ch_db']}"
     num_partitions = max(1, total_count // 10000)
     log.info("Repartitioning into %s chunks (~10k rows each)", num_partitions)
     df = df.repartition(num_partitions)
@@ -145,11 +140,11 @@ def write_to_clickhouse(df, cfg, total_count):
     (
         df.write
         .format("jdbc")
-        .option("url",       ch_url)
-        .option("dbtable",   cfg["ch_table"])
-        .option("user",      cfg["ch_user"])
-        .option("password",  cfg["ch_password"])
-        .option("driver",    "com.clickhouse.jdbc.ClickHouseDriver")
+        .option("url",      ch_url)
+        .option("dbtable",  cfg["ch_table"])
+        .option("user",     cfg["ch_user"])
+        .option("password", cfg["ch_password"])
+        .option("driver",   "com.clickhouse.jdbc.ClickHouseDriver")
         .option("batchsize", "5000")
         .mode("append")
         .save()
@@ -162,7 +157,7 @@ def main():
     cfg   = get_config()
     spark = create_spark_session()
 
-    silver_root = f"s3a://{cfg['silver_bucket']}/silver/transactions/"
+    silver_root = f"s3a://{cfg['silver_bucket']}/silver/market_news/"
 
     if args.date:
         log.info("Manual override — date: %s", args.date)
@@ -180,7 +175,6 @@ def main():
     silver_df, count = read_silver_partitions(spark, silver_root, partitions_to_load)
     ch_df            = prepare_for_clickhouse(silver_df)
 
-    
     if args.full_reload or (not args.date and get_last_loaded_date(cfg) is None):
         log.info("Truncating ClickHouse table before full reload...")
         client = clickhouse_connect.get_client(
