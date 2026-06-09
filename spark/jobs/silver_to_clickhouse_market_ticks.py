@@ -3,10 +3,11 @@ import os
 import sys
 import argparse
 import logging
-
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
+import boto3
+import pandas as pd
 import clickhouse_connect
+from io import BytesIO
+from datetime import date
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("silver_to_clickhouse_market_ticks")
@@ -22,7 +23,7 @@ def parse_args():
 def get_config():
     return {
         "silver_bucket": os.environ.get("FINSTREAM_SILVER_BUCKET", "finstream-silver-mostafa-dev"),
-        "ch_host"      : os.environ.get("CLICKHOUSE_HOST",          "finstream-clickhouse"),  # FIX
+        "ch_host"      : os.environ.get("CLICKHOUSE_HOST",          "finstream-clickhouse"),
         "ch_user"      : os.environ.get("CLICKHOUSE_USER",          "finstream"),
         "ch_password"  : os.environ.get("CLICKHOUSE_PASSWORD",      "finstream123"),
         "ch_db"        : os.environ.get("CLICKHOUSE_DB",            "finstream"),
@@ -30,159 +31,186 @@ def get_config():
     }
 
 
-def create_spark_session():
-    spark = (
-        SparkSession.builder
-        .appName("finstream-silver-to-clickhouse-market-ticks")
-        .config("spark.jars.packages",                   "org.apache.hadoop:hadoop-aws:3.3.4,com.clickhouse:clickhouse-jdbc:0.6.0")
-        .config("spark.hadoop.fs.s3a.impl",              "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.access.key",        os.environ["AWS_ACCESS_KEY_ID"])
-        .config("spark.hadoop.fs.s3a.secret.key",        os.environ["AWS_SECRET_ACCESS_KEY"])
-        .config("spark.hadoop.fs.s3a.endpoint",          "s3.amazonaws.com")
-        .config("spark.hadoop.fs.s3a.path.style.access", "false")
-        .config("spark.sql.shuffle.partitions",          "8")
-        .config("spark.driver.memory",                   "3g")
-        .getOrCreate()
+def get_s3_client():
+    return boto3.client(
+        "s3",
+        aws_access_key_id     = os.environ["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key = os.environ["AWS_SECRET_ACCESS_KEY"],
+        region_name           = os.environ.get("AWS_REGION", "us-east-1"),
     )
-    spark.sparkContext.setLogLevel("WARN")
-    log.info("Spark session created")
-    return spark
 
 
-def get_last_loaded_date(cfg):
-    try:
-        client    = clickhouse_connect.get_client(
-            host=cfg["ch_host"], port=8123,
-            username=cfg["ch_user"], password=cfg["ch_password"],
-            database=cfg["ch_db"],
-        )
-        result    = client.query(f"SELECT max(event_day) FROM {cfg['ch_table']}")
-        last_date = result.first_row[0]
-        client.close()
-        if last_date is None:
-            log.info("ClickHouse empty → full load")
-            return None
-        log.info("Last loaded date: %s", last_date)
-        return str(last_date)
-    except Exception as e:
-        log.warning("Could not query ClickHouse: %s — full load", e)
-        return None
+def list_partitions(s3, bucket, prefix):
+    """List event_day= partitions under a prefix."""
+    paginator = s3.get_paginator("list_objects_v2")
+    pages     = paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/")
+    partitions = sorted([
+        p["Prefix"].split("event_day=")[1].rstrip("/")
+        for page in pages
+        for p in page.get("CommonPrefixes", [])
+        if "event_day=" in p["Prefix"]
+    ])
+    return partitions
 
 
-def get_daily_partitions(spark, daily_root):
-    """List event_day= partitions in daily folder."""
-    try:
-        jvm      = spark.sparkContext._jvm
-        fs       = jvm.org.apache.hadoop.fs.FileSystem.get(
-                       jvm.java.net.URI.create(daily_root),
-                       jvm.org.apache.hadoop.conf.Configuration())
-        statuses = fs.listStatus(jvm.org.apache.hadoop.fs.Path(daily_root))
-        partitions = sorted([
-            s.getPath().getName().replace("event_day=", "")
-            for s in statuses
-            if s.getPath().getName().startswith("event_day=")
-        ])
-        log.info("Found %s daily partitions", len(partitions))
-        return partitions
-    except Exception:
-        log.info("No daily partitions found")
-        return []
+def list_parquet_files(s3, bucket, prefix):
+    """List all parquet files under a prefix."""
+    paginator = s3.get_paginator("list_objects_v2")
+    pages     = paginator.paginate(Bucket=bucket, Prefix=prefix)
+    return [
+        o["Key"] for page in pages
+        for o in page.get("Contents", [])
+        if o["Key"].endswith(".parquet")
+    ]
 
 
-def truncate_table(cfg):
-    client = clickhouse_connect.get_client(
-        host=cfg["ch_host"], port=8123,
-        username=cfg["ch_user"], password=cfg["ch_password"],
-        database=cfg["ch_db"],
-    )
-    client.command(f"TRUNCATE TABLE {cfg['ch_table']}")
-    client.close()
-    log.info("Table truncated")
+def fix_dtypes(df, event_day_str):
+   
+    df["event_day"] = pd.to_datetime(event_day_str).date()
+
+    
+    for col in ["event_id", "event_time", "symbol", "source", "anomaly_flag",
+                "raw_payload", "price_band", "silver_version"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str).where(df[col].notna(), None)
+
+    # Timestamp
+    if "silver_processed_at" in df.columns:
+        df["silver_processed_at"] = pd.to_datetime(df["silver_processed_at"])
+
+    # Int columns
+    for col in ["is_anomaly", "is_high_volume"]:
+        if col in df.columns:
+            df[col] = df[col].astype("Int32")
+
+    # Float columns
+    for col in ["price", "open_price", "high_price", "low_price", "close_price",
+                "volume", "price_change_pct", "source_lag_seconds"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
+    """Fix dtypes and inject event_day from partition name."""
+    
+    df["event_day"] = pd.to_datetime(event_day_str).date()
+
+    # Timestamp
+    if "silver_processed_at" in df.columns:
+        df["silver_processed_at"] = pd.to_datetime(df["silver_processed_at"])
+
+    # Int columns
+    for col in ["is_anomaly", "is_high_volume"]:
+        if col in df.columns:
+            df[col] = df[col].astype("Int32")
+
+    # Float columns
+    for col in ["price", "open_price", "high_price", "low_price", "close_price",
+                "volume", "price_change_pct", "source_lag_seconds"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
 
 
-def write_to_clickhouse(df, cfg, total_count):
-    ch_url         = f"jdbc:clickhouse://{cfg['ch_host']}:8123/{cfg['ch_db']}"
-    num_partitions = max(1, total_count // 10000)
-    log.info("Repartitioning into %s chunks", num_partitions)
-    df = df.repartition(num_partitions)
+def load_partition(s3, bucket, prefix, event_day_str, client, ch_table, batch_size=5000):
+    """Load one partition to ClickHouse."""
+    files = list_parquet_files(s3, bucket, prefix)
+    total = 0
+    for f in files:
+        obj = s3.get_object(Bucket=bucket, Key=f)
+        df  = pd.read_parquet(BytesIO(obj["Body"].read()))
+        df  = fix_dtypes(df, event_day_str)
 
-    log.info("Writing to ClickHouse %s.%s ...", cfg["ch_db"], cfg["ch_table"])
-    (
-        df.write
-        .format("jdbc")
-        .option("url",       ch_url)
-        .option("dbtable",   cfg["ch_table"])
-        .option("user",      cfg["ch_user"])
-        .option("password",  cfg["ch_password"])
-        .option("driver",    "com.clickhouse.jdbc.ClickHouseDriver")
-        .option("batchsize", "5000")
-        .mode("append")
-        .save()
-    )
-    log.info("ClickHouse write complete")
+        # Keep only ClickHouse columns
+        ch_cols = [
+            "event_id", "event_time", "event_time_ms", "ingestion_time_ms",
+            "source_lag_ms", "symbol", "price", "open_price", "high_price",
+            "low_price", "close_price", "volume", "source", "anomaly_flag",
+            "raw_payload", "price_band", "price_change_pct",
+            "is_anomaly", "is_high_volume", "source_lag_seconds",
+            "event_day", "silver_processed_at", "silver_version",
+        ]
+        df = df[[c for c in ch_cols if c in df.columns]]
+
+        for i in range(0, len(df), batch_size):
+            client.insert_df(ch_table, df.iloc[i:i+batch_size])
+            total += len(df.iloc[i:i+batch_size])
+
+    return total
 
 
 def main():
     args = parse_args()
     cfg  = get_config()
-    spark = create_spark_session()
+    s3   = get_s3_client()
 
-    silver_bucket     = cfg["silver_bucket"]
-    silver_historical = f"s3a://{silver_bucket}/silver/market_ticks/historical/"
-    silver_daily      = f"s3a://{silver_bucket}/silver/market_ticks/daily/"
+    bucket            = cfg["silver_bucket"]
+    historical_prefix = "silver/market_ticks/historical/"
+    daily_prefix      = "silver/market_ticks/daily/"
+
+    client = clickhouse_connect.get_client(
+        host=cfg["ch_host"], port=8123,
+        username=cfg["ch_user"], password=cfg["ch_password"],
+        database=cfg["ch_db"],
+    )
 
     if args.full_reload:
-        # ── Full reload: historical + all daily ──────────────────────────
         log.info("Mode: FULL RELOAD")
-        truncate_table(cfg)
+        client.command(f"TRUNCATE TABLE {cfg['ch_table']}")
+        log.info("Table truncated ✅")
 
-       
-        log.info("Reading historical: %s", silver_historical)
-        df_hist = spark.read.option("mergeSchema", "true").parquet(silver_historical)
+        # Historical partitions
+        hist_parts = list_partitions(s3, bucket, historical_prefix)
+        log.info("Found %s historical partitions", len(hist_parts))
 
-       
-        daily_parts = get_daily_partitions(spark, silver_daily)
-        if daily_parts:
-            log.info("Reading daily partitions: %s", daily_parts)
-            df_daily = spark.read.option("mergeSchema", "true").parquet(silver_daily)
-            df       = df_hist.unionByName(df_daily, allowMissingColumns=True)
-        else:
-            df = df_hist
+        total = 0
+        for day in hist_parts:
+            prefix = f"{historical_prefix}event_day={day}/"
+            n = load_partition(s3, bucket, prefix, day, client, cfg["ch_table"])
+            total += n
+            if total % 50000 == 0 or day == hist_parts[-1]:
+                log.info("Progress: %s rows loaded — current: %s", f"{total:,}", day)
 
-        count = df.count()
-        log.info("Total rows to load: %s", f"{count:,}")
-        write_to_clickhouse(df, cfg, count)
+        # Daily partitions
+        daily_parts = list_partitions(s3, bucket, daily_prefix)
+        for day in daily_parts:
+            prefix = f"{daily_prefix}event_day={day}/"
+            n = load_partition(s3, bucket, prefix, day, client, cfg["ch_table"])
+            total += n
+            log.info("Daily partition %s loaded — %s rows", day, n)
+
+        log.info("Full reload complete — total: %s rows ", f"{total:,}")
 
     elif args.date:
-        # ── Single date from daily ───────────────────────────────────────
         log.info("Mode: SINGLE DATE — %s", args.date)
-        path  = f"{silver_daily}event_day={args.date}/"
-        df    = spark.read.option("mergeSchema", "true").parquet(path)
-        count = df.count()
-        log.info("Rows to load: %s", f"{count:,}")
-        write_to_clickhouse(df, cfg, count)
+        prefix = f"{daily_prefix}event_day={args.date}/"
+        n = load_partition(s3, bucket, prefix, args.date, client, cfg["ch_table"])
+        log.info("Done — %s rows", n)
 
     else:
-        # ── Incremental: new daily partitions only ───────────────────────
         log.info("Mode: INCREMENTAL")
-        last_date  = get_last_loaded_date(cfg)
-        daily_parts = get_daily_partitions(spark, silver_daily)
+        result    = client.query(f"SELECT max(event_day) FROM {cfg['ch_table']}")
+        last_date = str(result.first_row[0]) if result.first_row[0] else None
+        log.info("Last loaded date: %s", last_date)
+
+        daily_parts = list_partitions(s3, bucket, daily_prefix)
         new_parts   = [p for p in daily_parts if last_date is None or p > last_date]
 
         if not new_parts:
             log.info("No new partitions — ClickHouse is up to date")
-            spark.stop()
+            client.close()
             return
 
-        log.info("New partitions: %s", new_parts)
-        paths = [f"{silver_daily}event_day={p}/" for p in new_parts]
-        df    = spark.read.option("mergeSchema", "true").parquet(*paths)
-        count = df.count()
-        log.info("Rows to load: %s", f"{count:,}")
-        write_to_clickhouse(df, cfg, count)
+        total = 0
+        for day in new_parts:
+            prefix = f"{daily_prefix}event_day={day}/"
+            n = load_partition(s3, bucket, prefix, day, client, cfg["ch_table"])
+            total += n
+            log.info("Loaded %s — %s rows", day, n)
 
-    log.info("Job complete")
-    spark.stop()
+        log.info("Incremental complete — %s rows", total)
+
+    client.close()
 
 
 if __name__ == "__main__":

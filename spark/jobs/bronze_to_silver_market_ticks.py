@@ -1,4 +1,3 @@
-
 import os
 import argparse
 import logging
@@ -40,7 +39,6 @@ def create_spark_session():
 
 
 def transform(df):
-    """Apply all transformations on the dataframe."""
     window = Window.partitionBy("event_id").orderBy(F.col("ingestion_time_ms").desc_nulls_last())
 
     return (
@@ -88,20 +86,19 @@ def main():
     args  = parse_args()
     spark = create_spark_session()
 
-    bronze_bucket    = os.environ.get("FINSTREAM_BRONZE_BUCKET", "finstream-bronze-mostafa-dev")
-    silver_bucket    = os.environ.get("FINSTREAM_SILVER_BUCKET", "finstream-silver-mostafa-dev")
-    bronze_root      = f"s3a://{bronze_bucket}/bronze/market_ticks/"
+    bronze_bucket     = os.environ.get("FINSTREAM_BRONZE_BUCKET", "finstream-bronze-mostafa-dev")
+    silver_bucket     = os.environ.get("FINSTREAM_SILVER_BUCKET", "finstream-silver-mostafa-dev")
+    bronze_root       = f"s3a://{bronze_bucket}/bronze/market_ticks/"
     silver_historical = f"s3a://{silver_bucket}/silver/market_ticks/historical/"
     silver_daily      = f"s3a://{silver_bucket}/silver/market_ticks/daily/"
 
     if args.date:
-        #Incremental
+        # ── Incremental ──────────────────────────────────────────────────
         log.info("Mode: INCREMENTAL — %s", args.date)
         bronze_path = f"{bronze_root}dt={args.date}/"
-        log.info("Reading: %s", bronze_path)
-
         df     = spark.read.option("mergeSchema", "true").parquet(bronze_path)
         silver = transform(df)
+        silver = silver.withColumn("event_day", F.to_date(F.lit(args.date)))
 
         log.info("Writing to daily: %s", silver_daily)
         (
@@ -111,27 +108,27 @@ def main():
             .partitionBy("event_day")
             .parquet(silver_daily)
         )
-        log.info("Done ✅ — date: %s", args.date)
+        log.info("Done — date: %s", args.date)
 
     else:
-        # Full load
+        # ── Full load ────────────────────────────────────────────────────
         log.info("Mode: FULL LOAD — reading ALL Bronze partitions at once")
-        log.info("Reading: %s", bronze_root)
-
         df     = spark.read.option("mergeSchema", "true").parquet(bronze_root)
         log.info("All Bronze data loaded into Spark")
 
         silver = transform(df)
 
-        log.info("Writing to historical: %s (coalesce 10)", silver_historical)
+        log.info("Writing to historical: %s (partitionBy event_day)", silver_historical)
         (
             silver
-            .coalesce(10)   
+            .repartition(20, F.col("event_day"))  # ── FIX: بدل coalesce ──
             .write
             .mode("overwrite")
+            .option("partitionOverwriteMode", "dynamic")
+            .partitionBy("event_day")
             .parquet(silver_historical)
         )
-        log.info("Silver historical written to S3")
+        log.info("Silver historical written")
         log.info("Full load complete")
 
     spark.stop()
