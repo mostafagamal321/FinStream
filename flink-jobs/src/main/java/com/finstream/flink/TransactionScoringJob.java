@@ -120,20 +120,64 @@ public class TransactionScoringJob {
             System.out.println("ML scorecard disabled. Using rule baseline only.");
         }
 
-        scoredTransactions
+        boolean enableRedisOnlineFeatureUpdate = Boolean.parseBoolean(
+                getEnv("ENABLE_REDIS_ONLINE_FEATURE_UPDATE", "false"));
+
+        DataStream<ScoredTransaction> scoredForSinks = scoredTransactions;
+
+        if (enableRedisOnlineFeatureUpdate) {
+            int redisOnlineFeatureTtlSeconds = Integer.parseInt(
+                    getEnv("REDIS_ONLINE_FEATURE_TTL_SECONDS", "604800"));
+
+            double smoothingFraudPrior = Double.parseDouble(
+                    getEnv("REDIS_FEATURE_SMOOTHING_FRAUD_PRIOR", "1.0"));
+
+            double smoothingTotalPrior = Double.parseDouble(
+                    getEnv("REDIS_FEATURE_SMOOTHING_TOTAL_PRIOR", "100.0"));
+
+            scoredForSinks = scoredTransactions
+                    .map(new RedisOnlineFeatureUpdateFunction(
+                            redisOnlineFeatureTtlSeconds,
+                            smoothingFraudPrior,
+                            smoothingTotalPrior))
+                    .name("redis_online_feature_update")
+                    .setParallelism(3);
+
+            System.out.println(
+                    "Redis online feature update enabled. ttlSeconds="
+                            + redisOnlineFeatureTtlSeconds);
+        } else {
+            System.out.println("Redis online feature update disabled.");
+        }
+
+        scoredForSinks
                 .print()
                 .name("print_scored_transactions")
                 .setParallelism(3);
 
-        scoredTransactions
+        scoredForSinks
                 .addSink(createClickHouseSink())
                 .name("clickhouse_fraud_scores_rt_sink")
                 .setParallelism(2);
 
+        boolean enableClickHouseEnrichedSink = Boolean.parseBoolean(
+                getEnv("ENABLE_CLICKHOUSE_ENRICHED_SINK", "true"));
+
+        if (enableClickHouseEnrichedSink) {
+            scoredForSinks
+                    .addSink(createClickHouseEnrichedSink())
+                    .name("clickhouse_fraud_scores_rt_enriched_sink")
+                    .setParallelism(2);
+
+            System.out.println("ClickHouse enriched sink enabled. table=finstream.fraud_scores_rt_enriched");
+        } else {
+            System.out.println("ClickHouse enriched sink disabled. ENABLE_CLICKHOUSE_ENRICHED_SINK=false.");
+        }
+
         String s3ScoredPath = getEnv("S3_TRANSACTIONS_SCORED_PATH", "");
 
         if (!s3ScoredPath.isBlank()) {
-            scoredTransactions
+            scoredForSinks
                     .map(new ScoredTransactionJsonMapper())
                     .name("scored_transaction_to_json")
                     .setParallelism(3)
@@ -151,7 +195,7 @@ public class TransactionScoringJob {
         String fraudAlertsTopic = getEnv("TOPIC_FRAUD_ALERTS", "fraud_alerts");
 
         if (enableFraudAlertsSink) {
-            scoredTransactions
+            scoredForSinks
                     .filter(TransactionScoringJob::isFraudAlert)
                     .name("filter_high_risk_fraud_alerts")
                     .setParallelism(3)
@@ -261,6 +305,69 @@ public class TransactionScoringJob {
                         .build());
     }
 
+    private static SinkFunction<ScoredTransaction> createClickHouseEnrichedSink() {
+        String clickHouseUrl = getEnv(
+                "CLICKHOUSE_JDBC_URL",
+                "jdbc:clickhouse://clickhouse:8123/finstream");
+
+        String clickHouseUser = getEnv("CLICKHOUSE_USER", "default");
+        String clickHousePassword = getEnv("CLICKHOUSE_PASSWORD", "");
+
+        String insertSql = """
+                INSERT INTO finstream.fraud_scores_rt_enriched
+                (
+                    event_id,
+                    transaction_id,
+                    event_time,
+                    ingestion_time,
+                    source,
+                    split,
+                    transaction_dt,
+                    amount,
+                    currency,
+                    product_cd,
+                    customer_id,
+                    card_id,
+                    merchant_id,
+                    card_brand,
+                    card_type,
+                    addr1,
+                    addr2,
+                    payer_email_domain,
+                    receiver_email_domain,
+                    device_type,
+                    device_info,
+                    actual_is_fraud,
+                    rule_score,
+                    ml_score,
+                    fraud_score,
+                    scoring_method,
+                    risk_level,
+                    decision,
+                    reason_codes,
+                    source_topic,
+                    source_partition,
+                    source_offset
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
+
+        return JdbcSink.sink(
+                insertSql,
+                TransactionScoringJob::bindScoredTransactionEnriched,
+                JdbcExecutionOptions.builder()
+                        .withBatchSize(1000)
+                        .withBatchIntervalMs(2000)
+                        .withMaxRetries(5)
+                        .build(),
+                new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
+                        .withUrl(clickHouseUrl)
+                        .withDriverName("com.clickhouse.jdbc.ClickHouseDriver")
+                        .withUsername(clickHouseUser)
+                        .withPassword(clickHousePassword)
+                        .build());
+    }
+
     private static void bindScoredTransaction(
             PreparedStatement statement,
             ScoredTransaction scored) throws SQLException {
@@ -306,6 +413,101 @@ public class TransactionScoringJob {
         statement.setLong(20, scored.kafkaOffset);
     }
 
+    private static void bindScoredTransactionEnriched(
+            PreparedStatement statement,
+            ScoredTransaction scored) throws SQLException {
+
+        statement.setString(1, safeString(scored.eventId));
+        statement.setString(2, safeString(scored.transactionId));
+
+        setTimestampFromIso(statement, 3, scored.eventTime);
+        setTimestampFromIso(statement, 4, scored.ingestionTime);
+
+        statement.setString(5, safeString(scored.source));
+        statement.setString(6, safeString(scored.split));
+        statement.setLong(7, scored.transactionDt);
+
+        statement.setDouble(8, scored.amount);
+        statement.setString(9, safeString(scored.currency));
+
+        setNullableString(statement, 10, scored.productCd);
+
+        statement.setString(11, safeString(scored.customerId));
+        statement.setString(12, safeString(scored.cardId));
+        statement.setString(13, safeString(scored.merchantId));
+
+        setNullableString(statement, 14, scored.cardBrand);
+        setNullableString(statement, 15, scored.cardType);
+        setNullableDouble(statement, 16, scored.addr1);
+        setNullableDouble(statement, 17, scored.addr2);
+
+        setNullableString(statement, 18, scored.payerEmailDomain);
+        setNullableString(statement, 19, scored.receiverEmailDomain);
+        setNullableString(statement, 20, scored.deviceType);
+        setNullableString(statement, 21, scored.deviceInfo);
+
+        if (scored.actualIsFraud == null) {
+            statement.setNull(22, Types.INTEGER);
+        } else {
+            statement.setInt(22, scored.actualIsFraud);
+        }
+
+        statement.setDouble(23, scored.ruleScore);
+
+        if (scored.mlScore == null) {
+            statement.setNull(24, Types.DOUBLE);
+        } else {
+            statement.setDouble(24, scored.mlScore);
+        }
+
+        statement.setDouble(25, scored.fraudScore);
+        statement.setString(26, safeString(scored.scoringMethod));
+        statement.setString(27, safeString(scored.riskLevel));
+        statement.setString(28, safeString(scored.decision));
+        statement.setString(29, String.join(",", scored.reasonCodes));
+
+        statement.setString(30, safeString(scored.kafkaTopic));
+        statement.setInt(31, scored.kafkaPartition);
+        statement.setLong(32, scored.kafkaOffset);
+    }
+
+    private static void setTimestampFromIso(
+            PreparedStatement statement,
+            int index,
+            String isoTimestamp) throws SQLException {
+        if (isoTimestamp == null || isoTimestamp.isBlank()) {
+            statement.setTimestamp(index, Timestamp.from(Instant.now()));
+            return;
+        }
+        statement.setTimestamp(index, Timestamp.from(Instant.parse(isoTimestamp)));
+    }
+
+    private static void setNullableString(
+            PreparedStatement statement,
+            int index,
+            String value) throws SQLException {
+        if (value == null || value.isBlank()) {
+            statement.setNull(index, Types.VARCHAR);
+        } else {
+            statement.setString(index, value);
+        }
+    }
+
+    private static void setNullableDouble(
+            PreparedStatement statement,
+            int index,
+            Double value) throws SQLException {
+        if (value == null) {
+            statement.setNull(index, Types.DOUBLE);
+        } else {
+            statement.setDouble(index, value);
+        }
+    }
+
+    private static String safeString(String value) {
+        return value == null ? "" : value;
+    }
+
     private static FileSink<String> createS3ScoredTransactionsSink(String s3OutputPath) {
         return FileSink
                 .forRowFormat(
@@ -327,15 +529,29 @@ public class TransactionScoringJob {
         @Override
         public String map(ScoredTransaction scored) {
             return "{"
+                    + "\"event_id\":\"" + escapeJson(scored.eventId) + "\","
                     + "\"transaction_id\":\"" + escapeJson(scored.transactionId) + "\","
-                    + "\"customer_id\":\"" + escapeJson(scored.customerId) + "\","
-                    + "\"card_id\":\"" + escapeJson(scored.cardId) + "\","
-                    + "\"merchant_id\":\"" + escapeJson(scored.merchantId) + "\","
                     + "\"event_time\":\"" + escapeJson(scored.eventTime) + "\","
+                    + "\"ingestion_time\":\"" + escapeJson(scored.ingestionTime) + "\","
                     + "\"scored_at\":\"" + escapeJson(scored.scoredAt) + "\","
+                    + "\"source\":\"" + escapeJson(scored.source) + "\","
+                    + "\"split\":\"" + escapeJson(scored.split) + "\","
+                    + "\"transaction_dt\":" + scored.transactionDt + ","
                     + "\"amount\":" + scored.amount + ","
                     + "\"currency\":\"" + escapeJson(scored.currency) + "\","
                     + "\"product_cd\":\"" + escapeJson(scored.productCd) + "\","
+                    + "\"customer_id\":\"" + escapeJson(scored.customerId) + "\","
+                    + "\"card_id\":\"" + escapeJson(scored.cardId) + "\","
+                    + "\"merchant_id\":\"" + escapeJson(scored.merchantId) + "\","
+                    + "\"card_brand\":\"" + escapeJson(scored.cardBrand) + "\","
+                    + "\"card_type\":\"" + escapeJson(scored.cardType) + "\","
+                    + "\"addr1\":" + nullableDouble(scored.addr1) + ","
+                    + "\"addr2\":" + nullableDouble(scored.addr2) + ","
+                    + "\"payer_email_domain\":\"" + escapeJson(scored.payerEmailDomain) + "\","
+                    + "\"receiver_email_domain\":\"" + escapeJson(scored.receiverEmailDomain) + "\","
+                    + "\"device_type\":\"" + escapeJson(scored.deviceType) + "\","
+                    + "\"device_info\":\"" + escapeJson(scored.deviceInfo) + "\","
+                    + "\"actual_is_fraud\":" + nullableInteger(scored.actualIsFraud) + ","
                     + "\"rule_score\":" + scored.ruleScore + ","
                     + "\"ml_score\":" + nullableDouble(scored.mlScore) + ","
                     + "\"fraud_score\":" + scored.fraudScore + ","
@@ -343,7 +559,6 @@ public class TransactionScoringJob {
                     + "\"risk_level\":\"" + escapeJson(scored.riskLevel) + "\","
                     + "\"decision\":\"" + escapeJson(scored.decision) + "\","
                     + "\"reason_codes\":\"" + escapeJson(String.join(",", scored.reasonCodes)) + "\","
-                    + "\"actual_is_fraud\":" + nullableInteger(scored.actualIsFraud) + ","
                     + "\"kafka_topic\":\"" + escapeJson(scored.kafkaTopic) + "\","
                     + "\"kafka_partition\":" + scored.kafkaPartition + ","
                     + "\"kafka_offset\":" + scored.kafkaOffset
@@ -656,16 +871,34 @@ public class TransactionScoringJob {
 
             ScoredTransaction scored = new ScoredTransaction();
 
+            scored.eventId = event.eventId;
             scored.transactionId = event.transactionId;
-            scored.customerId = event.customerId;
-            scored.cardId = event.cardId;
-            scored.merchantId = event.merchantId;
+
             scored.eventTime = event.eventTime;
+            scored.ingestionTime = event.ingestionTime;
             scored.scoredAt = Instant.now().toString();
+
+            scored.source = event.source;
+            scored.split = event.split;
+            scored.transactionDt = event.transactionDt;
 
             scored.amount = event.amount;
             scored.currency = event.currency;
             scored.productCd = event.productCd;
+
+            scored.customerId = event.customerId;
+            scored.cardId = event.cardId;
+            scored.merchantId = event.merchantId;
+
+            scored.cardBrand = event.cardBrand;
+            scored.cardType = event.cardType;
+            scored.addr1 = event.addr1;
+            scored.addr2 = event.addr2;
+
+            scored.payerEmailDomain = event.payerEmailDomain;
+            scored.receiverEmailDomain = event.receiverEmailDomain;
+            scored.deviceType = event.deviceType;
+            scored.deviceInfo = event.deviceInfo;
 
             scored.ruleScore = ruleScore;
             scored.mlScore = null;
@@ -677,6 +910,7 @@ public class TransactionScoringJob {
             scored.reasonCodes = reasonCodes;
 
             scored.actualIsFraud = event.isFraud;
+
             scored.kafkaTopic = event.kafkaTopic;
             scored.kafkaPartition = event.kafkaPartition;
             scored.kafkaOffset = event.kafkaOffset;
@@ -846,6 +1080,152 @@ public class TransactionScoringJob {
             if (denominator <= 0.0)
                 return 0.0;
             return numerator / denominator;
+        }
+
+        private static String nullToEmpty(String value) {
+            return value == null ? "" : value;
+        }
+    }
+
+    public static class RedisOnlineFeatureUpdateFunction
+            extends RichMapFunction<ScoredTransaction, ScoredTransaction> {
+
+        private final int ttlSeconds;
+        private final double smoothingFraudPrior;
+        private final double smoothingTotalPrior;
+
+        private transient JedisPool jedisPool;
+
+        public RedisOnlineFeatureUpdateFunction(
+                int ttlSeconds,
+                double smoothingFraudPrior,
+                double smoothingTotalPrior) {
+            this.ttlSeconds = ttlSeconds;
+            this.smoothingFraudPrior = smoothingFraudPrior;
+            this.smoothingTotalPrior = smoothingTotalPrior;
+        }
+
+        @Override
+        public void open(Configuration parameters) {
+            String redisHost = getEnv("REDIS_HOST", "redis");
+            int redisPort = Integer.parseInt(getEnv("REDIS_PORT", "6379"));
+            int redisTimeoutMs = Integer.parseInt(getEnv("REDIS_TIMEOUT_MS", "200"));
+
+            JedisPoolConfig poolConfig = new JedisPoolConfig();
+            poolConfig.setMaxTotal(8);
+            poolConfig.setMaxIdle(4);
+            poolConfig.setMinIdle(1);
+
+            this.jedisPool = new JedisPool(
+                    poolConfig,
+                    redisHost,
+                    redisPort,
+                    redisTimeoutMs);
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.ping();
+            }
+
+            System.out.println(
+                    "Redis online feature update function initialized. ttlSeconds="
+                            + ttlSeconds
+                            + ", smoothingFraudPrior="
+                            + smoothingFraudPrior
+                            + ", smoothingTotalPrior="
+                            + smoothingTotalPrior);
+        }
+
+        @Override
+        public void close() {
+            if (jedisPool != null) {
+                jedisPool.close();
+            }
+        }
+
+        @Override
+        public ScoredTransaction map(ScoredTransaction scored) {
+            if (scored == null) {
+                return null;
+            }
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                updateEntityFeatures(jedis, "merchant", scored.merchantId, scored.amount, scored.actualIsFraud);
+                updateEntityFeatures(jedis, "customer", scored.customerId, scored.amount, scored.actualIsFraud);
+                updateEntityFeatures(jedis, "card", scored.cardId, scored.amount, scored.actualIsFraud);
+
+                jedis.set("feature_store:last_online_update_at", Instant.now().toString());
+                jedis.set("feature_store:last_online_transaction_id", nullToEmpty(scored.transactionId));
+            } catch (Exception ex) {
+                scored.reasonCodes.add("REDIS_ONLINE_FEATURE_UPDATE_FAILED");
+            }
+
+            return scored;
+        }
+
+        private void updateEntityFeatures(
+                Jedis jedis,
+                String entityType,
+                String entityId,
+                double amount,
+                Integer actualIsFraud) {
+            if (entityId == null || entityId.isBlank()) {
+                return;
+            }
+
+            String txnCountKey = entityType + ":txn_count:" + entityId;
+            String fraudCountKey = entityType + ":fraud_count:" + entityId;
+            String avgAmountKey = entityType + ":avg_amount:" + entityId;
+            String fraudRateKey = entityType + ":fraud_rate:" + entityId;
+            String fraudRateSmoothedKey = entityType + ":fraud_rate_smoothed:" + entityId;
+
+            double oldTxnCount = redisDouble(jedis, txnCountKey, 0.0);
+            double oldFraudCount = redisDouble(jedis, fraudCountKey, 0.0);
+            double oldAvgAmount = redisDouble(jedis, avgAmountKey, 0.0);
+
+            double newTxnCount = oldTxnCount + 1.0;
+            double newFraudCount = oldFraudCount;
+
+            if (actualIsFraud != null && actualIsFraud == 1) {
+                newFraudCount = oldFraudCount + 1.0;
+            }
+
+            double newAvgAmount;
+            if (newTxnCount <= 1.0) {
+                newAvgAmount = amount;
+            } else {
+                newAvgAmount = ((oldAvgAmount * oldTxnCount) + amount) / newTxnCount;
+            }
+
+            double fraudRate = newTxnCount > 0.0 ? newFraudCount / newTxnCount : 0.0;
+            double fraudRateSmoothed =
+                    (newFraudCount + smoothingFraudPrior) / (newTxnCount + smoothingTotalPrior);
+
+            jedis.set(txnCountKey, Double.toString(newTxnCount));
+            jedis.set(fraudCountKey, Double.toString(newFraudCount));
+            jedis.set(avgAmountKey, Double.toString(newAvgAmount));
+            jedis.set(fraudRateKey, Double.toString(fraudRate));
+            jedis.set(fraudRateSmoothedKey, Double.toString(fraudRateSmoothed));
+
+            if (ttlSeconds > 0) {
+                jedis.expire(txnCountKey, ttlSeconds);
+                jedis.expire(fraudCountKey, ttlSeconds);
+                jedis.expire(avgAmountKey, ttlSeconds);
+                jedis.expire(fraudRateKey, ttlSeconds);
+                jedis.expire(fraudRateSmoothedKey, ttlSeconds);
+            }
+        }
+
+        private static double redisDouble(Jedis jedis, String key, double defaultValue) {
+            String value = jedis.get(key);
+            if (value == null || value.isBlank()) {
+                return defaultValue;
+            }
+
+            try {
+                return Double.parseDouble(value);
+            } catch (NumberFormatException ex) {
+                return defaultValue;
+            }
         }
 
         private static String nullToEmpty(String value) {
@@ -1054,16 +1434,34 @@ public class TransactionScoringJob {
     }
 
     public static class ScoredTransaction implements Serializable {
+        public String eventId;
         public String transactionId;
-        public String customerId;
-        public String cardId;
-        public String merchantId;
+
         public String eventTime;
+        public String ingestionTime;
         public String scoredAt;
+
+        public String source;
+        public String split;
+        public long transactionDt;
 
         public double amount;
         public String currency;
         public String productCd;
+
+        public String customerId;
+        public String cardId;
+        public String merchantId;
+
+        public String cardBrand;
+        public String cardType;
+        public Double addr1;
+        public Double addr2;
+
+        public String payerEmailDomain;
+        public String receiverEmailDomain;
+        public String deviceType;
+        public String deviceInfo;
 
         public double ruleScore;
         public Double mlScore;
@@ -1085,6 +1483,9 @@ public class TransactionScoringJob {
             return "ScoredTransaction{" +
                     "transactionId='" + transactionId + '\'' +
                     ", amount=" + amount +
+                    ", deviceType='" + deviceType + '\'' +
+                    ", addr1=" + addr1 +
+                    ", addr2=" + addr2 +
                     ", ruleScore=" + ruleScore +
                     ", mlScore=" + mlScore +
                     ", fraudScore=" + fraudScore +

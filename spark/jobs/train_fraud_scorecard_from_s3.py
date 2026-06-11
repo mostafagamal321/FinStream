@@ -106,12 +106,14 @@ def evaluate_thresholds(y_true: np.ndarray, probabilities: np.ndarray, threshold
 
 
 def main() -> None:
-    bronze_bucket = get_env("FINSTREAM_BRONZE_BUCKET", "finstream-bronze-mostafa-dev")
+    silver_bucket = get_env("FINSTREAM_SILVER_BUCKET", "finstream-silver-mostafa-dev")
 
     input_path = get_env(
         "S3_SCORED_TRANSACTIONS_INPUT",
-        f"s3a://{bronze_bucket}/bronze/transactions_scored_flink/*/*/part-*",
+        f"s3a://{silver_bucket}/silver/transactions_scored_parquet/",
     )
+
+    input_format = get_env("S3_SCORED_TRANSACTIONS_FORMAT", "parquet").lower()
 
     scorecard_s3_uri = get_env(
         "MODEL_SCORECARD_S3_URI",
@@ -122,7 +124,7 @@ def main() -> None:
     block_threshold = float(get_env("ML_BLOCK_THRESHOLD", "0.70"))
 
     # 0 means no limit
-    max_training_rows = int(get_env("MAX_TRAINING_ROWS", "200000"))
+    max_training_rows = int(get_env("MAX_TRAINING_ROWS", "0"))
 
     spark = (
         SparkSession.builder
@@ -136,10 +138,17 @@ def main() -> None:
 
     total_start = now_ts()
 
-    log_step(f"Reading S3 training data from: {input_path}")
+    log_step(f"Reading S3 training data from: {input_path} (format={input_format})")
     step_start = now_ts()
-    df = spark.read.json(input_path)
-    log_elapsed("read_json_lazy", step_start)
+
+    if input_format == "parquet":
+        df = spark.read.parquet(input_path)
+    elif input_format == "json":
+        df = spark.read.json(input_path)
+    else:
+        raise ValueError(f"Unsupported input format: {input_format}")
+
+    log_elapsed(f"read_{input_format}_lazy", step_start)
 
     required_columns = [
         "transaction_id",

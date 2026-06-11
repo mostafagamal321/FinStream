@@ -116,8 +116,8 @@ def main() -> None:
         "s3://finstream-silver-mostafa-dev/ml/models/fraud_gbdt_onnx/latest/metadata.json",
     )
 
-    review_threshold = float(get_env("ML_REVIEW_THRESHOLD", "0.10"))
-    block_threshold = float(get_env("ML_BLOCK_THRESHOLD", "0.30"))
+    review_threshold = float(get_env("ML_REVIEW_THRESHOLD", "0.30"))
+    block_threshold = float(get_env("ML_BLOCK_THRESHOLD", "0.70"))
     max_training_rows = int(get_env("MAX_TRAINING_ROWS", "200000"))
 
     spark = (
