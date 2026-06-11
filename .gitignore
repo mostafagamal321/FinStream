@@ -1,56 +1,107 @@
+# =========================
 # Python
+# =========================
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyo
+*.pyd
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 .venv/
 venv/
+env/
+
+
+# =========================
+# Environment / secrets
+# =========================
 .env
 *.env
-.docker/
+.env.*
+!.env.example
+
+Aws-access-keys.txt
+aws-access-keys.txt
+*access-key*
+*secret-key*
+*.pem
+*.key
+
+
+# =========================
+# Data / local artifacts
+# =========================
+data/*
+!data/.gitkeep
+!data/sample/
+!data/sample/.gitkeep
+!data/raw/
+!data/raw/.gitkeep
+
+# Keep schemas tracked; ignore generated/local data files.
+*.parquet
+*.csv
+*.jsonl
+*.log
+
+# Do not ignore all JSON globally because schemas/configs may use .json.
+# If you need generated JSON data, place it under data/.
+
+
+# =========================
+# Airflow
+# =========================
 airflow/logs/
-*.pyc
+airflow/**/__pycache__/
 
 
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Docker / local
+# =========================
+# Docker / local volumes
+# =========================
+.docker/
 s3_local_cache/
 clickhouse_data/
 postgres_data/
 redis_data/
-
-Aws-access-keys.txt
-data/raw/**/*.csv
-
-
-producer_state/*.json
-producer_state/*.tmp
-
-
-data/downloads/
+kafka-data/
+flink-checkpoints/
+mlflow-data/
+prometheus-data/
+grafana-data/
+superset-home/
 
 
-market_news_all_check
-market_news_check
-market_ticks_all
-market_ticks_live_fixed
-market_ticks_sample
-market_ticks_today
-
-
-# Java / Maven build output
+# =========================
+# Java / Maven / Flink build artifacts
+# =========================
+.m2/
 target/
 flink-jobs/target/
 *.class
-*.jar
+
+# Runtime-built Flink job jars should be rebuilt locally, not committed.
+flink/jobs/*.jar
 
 
-# Local runtime state
-monitoring/.health_state.json
-producer_state/
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db
+
+# Flink runtime checkpoints
+flink/checkpoints/
+
+flink/checkpoints/*
+!flink/checkpoints/.gitkeep

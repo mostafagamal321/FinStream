@@ -48,6 +48,18 @@ TOPIC_DEAD_LETTER_QUEUE = os.getenv(
     "dead_letter_queue",
 )
 
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+FINSTREAM_BRONZE_BUCKET = os.getenv(
+    "FINSTREAM_BRONZE_BUCKET",
+    "",
+)
+
+S3_TRANSACTIONS_BRONZE_PREFIX = os.getenv(
+    "S3_TRANSACTIONS_BRONZE_PREFIX",
+    "bronze/transactions_raw",
+)
+
 TRAIN_TRANSACTION_PATH = Path(
     os.getenv(
         "TRAIN_TRANSACTION_PATH",
@@ -97,6 +109,11 @@ REPLAY_DELAY_SECONDS = float(
     )
 )
 
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+
+DEFAULT_SYMBOLS = ["AAPL", "MSFT", "TSLA", "AMZN", "NVDA"]
+
 TRANSACTION_SCHEMA_PATH = SCHEMA_DIR / "transactions" / "transaction_event.avsc"
 MARKET_TICK_SCHEMA_PATH = SCHEMA_DIR / "market" / "stock_tick_event.avsc"
 NEWS_SCHEMA_PATH = SCHEMA_DIR / "news" / "news_event.avsc"
@@ -104,7 +121,8 @@ FX_RATE_SCHEMA_PATH = SCHEMA_DIR / "fx" / "fx_rate_event.avsc"
 DLQ_SCHEMA_PATH = SCHEMA_DIR / "dlq" / "dead_letter_event.avsc"
 
 
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+def require_env_var(name: str, value: str | None) -> str:
+    if not value:
+        raise ValueError(f"Missing required environment variable: {name}")
+    return value
 
-DEFAULT_SYMBOLS = ["AAPL", "MSFT", "TSLA", "AMZN", "NVDA"]

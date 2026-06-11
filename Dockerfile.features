@@ -1,0 +1,19 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    redis==5.0.8 \
+    requests==2.32.3 \
+    python-dotenv==1.0.1
+
+COPY src ./src
+
+CMD ["python", "-m", "src.features.redis_feature_loader"]
