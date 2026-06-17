@@ -12,7 +12,9 @@ x-aws-env: &aws-env
  MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET:-finstream-local-mlflow}
 
 x-airflow-common: &airflow-common
- image: apache/airflow:2.9.3-python3.11
+ build:
+  context: .
+  dockerfile: Dockerfile.airflow
  env_file: .env
  environment:
   AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -47,24 +49,20 @@ services:
    KAFKA_PROCESS_ROLES: broker,controller
    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-
    KAFKA_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://kafka:9093
    KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-
    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
    KAFKA_DEFAULT_REPLICATION_FACTOR: 1
    KAFKA_MIN_INSYNC_REPLICAS: 1
-
    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
    KAFKA_NUM_PARTITIONS: 3
    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
    KAFKA_LOG_RETENTION_HOURS: 24
    KAFKA_LOG_SEGMENT_BYTES: 1073741824
-
    CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
   volumes:
    - kafka-data:/var/lib/kafka/data
@@ -165,6 +163,7 @@ services:
   mem_limit: 256m
   networks:
    - finstream
+
  market-producer:
   build:
    context: .
@@ -273,20 +272,16 @@ services:
    JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
-
    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
    AWS_REGION: ${AWS_REGION}
    AWS_DEFAULT_REGION: ${AWS_REGION}
-
    FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
    FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET}
    MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET}
-
    S3_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
    S3_BRONZE_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze
    S3_SILVER_PATH: s3://${FINSTREAM_SILVER_BUCKET}/silver
-
   depends_on:
    kafka:
     condition: service_healthy
@@ -294,17 +289,14 @@ services:
     condition: service_healthy
   networks:
    - finstream
- ##
+
  flink-taskmanager:
   build:
    context: .
    dockerfile: Dockerfile.flink
-  # container_name: finstream-flink-taskmanager
   command: taskmanager
-  #  CHANGED: removed container_name (can't have duplicate names across replicas)
-  # container_name: finstream-flink-taskmanager
   deploy:
-   replicas: 2 #  2 TaskManagers × 4 slots each = 8 total slots
+   replicas: 2
   env_file:
    - .env
   environment:
@@ -312,25 +304,21 @@ services:
    TASK_MANAGER_NUMBER_OF_TASK_SLOTS: 4
    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
    SCHEMA_REGISTRY_URL: http://schema-registry:8081
-
    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
    AWS_REGION: ${AWS_REGION}
    AWS_DEFAULT_REGION: ${AWS_REGION}
-
    FINSTREAM_BRONZE_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
    FINSTREAM_SILVER_BUCKET: ${FINSTREAM_SILVER_BUCKET}
    MLFLOW_ARTIFACT_BUCKET: ${MLFLOW_ARTIFACT_BUCKET}
-
    S3_BUCKET: ${FINSTREAM_BRONZE_BUCKET}
    S3_BRONZE_PATH: s3://${FINSTREAM_BRONZE_BUCKET}/bronze
    S3_SILVER_PATH: s3://${FINSTREAM_SILVER_BUCKET}/silver
-
   depends_on:
    - flink-jobmanager
   networks:
    - finstream
- ##
+
  clickhouse:
   image: clickhouse/clickhouse-server:24.7
   container_name: finstream-clickhouse
@@ -376,7 +364,7 @@ services:
   volumes:
    - ./spark/jobs:/opt/spark/jobs
    - ./dbt:/opt/spark/dbt
-  mem_limit: 1g
+  mem_limit: 4g
   networks:
    - finstream
 
@@ -401,7 +389,7 @@ services:
   depends_on:
    spark-master:
     condition: service_started
-  mem_limit: 1g
+  mem_limit: 4g
   networks:
    - finstream
 
